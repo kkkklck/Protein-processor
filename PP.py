@@ -1,5 +1,5 @@
 from typing import List, Dict, Tuple
-import os, re
+import os, re, glob
 import shutil
 import subprocess
 
@@ -201,6 +201,81 @@ def normalize_path_for_chimerax(path: str) -> str:
     """
     p = path.strip().strip('"').strip("'")
     return p.replace("\\", "/")
+
+
+def build_axis_cxc(
+    wt_pdb_path: str,
+    chain_id: str,
+    residue_expr: str,
+    out_dir: str,
+    label: str = "axis",
+) -> str:
+    """根据 WT + 残基表达式生成“找轴”脚本。"""
+
+    wt_pdb_path = (wt_pdb_path or "").strip()
+    residue_expr = (residue_expr or "").strip()
+    out_dir = (out_dir or "").strip()
+    if not wt_pdb_path:
+        raise ValueError("wt_pdb_path 不能为空")
+    if not residue_expr:
+        raise ValueError("residue_expr 不能为空")
+    if not out_dir:
+        raise ValueError("out_dir 不能为空")
+
+    wt_cx = normalize_path_for_chimerax(wt_pdb_path)
+    out_dir_cx = normalize_path_for_chimerax(out_dir)
+
+    safe_label = (label or "axis").strip() or "axis"
+    log_name = f"axis_{safe_label}.log"
+    log_path_cx = f"{out_dir_cx}/{log_name}"
+
+    lines = [
+        f"# === 自动找轴工具: {safe_label} ===",
+        "close all",
+        f"open \"{wt_cx}\"",
+        f"select #1/{chain_id or 'A'}:{residue_expr}",
+        "view sel",
+        "clip near 8; clip far 60",
+        "log clear",
+        "measure center sel mark true radius 0.6 color yellow",
+        f"log save \"{log_path_cx}\" executableLinks false",
+        "getcrd sel",
+        "# 运行完后，到输出目录里找 axis_*.log 并交给 Python 解析。",
+    ]
+
+    os.makedirs(out_dir, exist_ok=True)
+    axis_cxc_path = os.path.join(out_dir, f"{safe_label}_axis.cxc")
+    with open(axis_cxc_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+
+    return axis_cxc_path
+
+
+def parse_axis_log(log_path: str) -> Tuple[float, float, float]:
+    """从 axis log 中解析出质心坐标。"""
+
+    if not os.path.exists(log_path):
+        raise FileNotFoundError(f"找不到 log 文件：{log_path}")
+
+    pattern = re.compile(r"Center of mass[^=]*=\s*\(([^)]+)\)")
+    with open(log_path, encoding="utf-8", errors="ignore") as f:
+        for line in f:
+            if "Center of mass" not in line:
+                continue
+            match = pattern.search(line)
+            if not match:
+                continue
+            coord_str = match.group(1)
+            parts = [p.strip() for p in coord_str.split(",")]
+            if len(parts) != 3:
+                continue
+            try:
+                x, y, z = map(float, parts)
+            except ValueError:
+                continue
+            return x, y, z
+
+    raise ValueError(f"在 log 里没找到质心坐标: {log_path}")
 
 
 def _split_multi_value(value: str) -> List[str]:
@@ -469,3 +544,111 @@ def build_cxc_script(
 
     add("# === 脚本结束 ===")
     return "\n".join(lines) + "\n"
+
+def parse_sasa_html(path: str) -> Dict[str, float]:
+    """解析 ChimeraX 输出的 *_sasa.html，得到残基 SASA。"""
+
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"找不到 SASA 文件：{path}")
+
+    with open(path, encoding="utf-8", errors="ignore") as f:
+        text = f.read()
+
+    text_no_html = re.sub(r"<[^>]+>", " ", text)
+    pattern = re.compile(r"[#/]*([\w:]+).*?area\s+([0-9.]+)", re.IGNORECASE)
+    sasa: Dict[str, float] = {}
+
+    for raw_line in text_no_html.splitlines():
+        line = raw_line.strip()
+        if not line or "area" not in line.lower():
+            continue
+        match = pattern.search(line)
+        if not match:
+            continue
+        resid = match.group(1)
+        try:
+            area = float(match.group(2))
+        except ValueError:
+            continue
+        sasa[resid] = area
+
+    if not sasa:
+        raise ValueError(f"在 {path} 中没有解析到 SASA 数据。")
+
+    return sasa
+
+def parse_hbonds_txt(path: str) -> int:
+    """统计氢键日志（txt）中的氢键数量。"""
+
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"找不到氢键日志：{path}")
+
+    count = 0
+    with open(path, encoding="utf-8", errors="ignore") as f:
+        for line in f:
+            striped = line.strip()
+            if not striped or striped.startswith("#"):
+                continue
+            count += 1
+    return count
+
+def summarize_sasa_hbonds(out_dir: str) -> Tuple[str, str]:
+    """扫描 *_sasa.html / *_hbonds.txt，输出汇总 CSV。"""
+
+    if _pd is None:
+        raise RuntimeError("需要安装 pandas 才能汇总 SASA/H-bonds。")
+
+    out_dir = (out_dir or "").strip()
+    if not out_dir:
+        raise ValueError("out_dir 不能为空")
+
+    sasa_files = sorted(glob.glob(os.path.join(out_dir, "*_sasa.html")))
+    if not sasa_files:
+        raise ValueError(f"在 {out_dir} 没找到任何 *_sasa.html 文件。")
+
+    summary_rows: List[Dict[str, float]] = []
+    detail_rows: List[Dict[str, str]] = []
+    all_resids = set()
+
+    for sasa_path in sasa_files:
+        label = os.path.basename(sasa_path).replace("_sasa.html", "")
+        sasa_dict = parse_sasa_html(sasa_path)
+        hb_path = os.path.join(out_dir, f"{label}_hbonds.txt")
+        hbonds = parse_hbonds_txt(hb_path) if os.path.exists(hb_path) else 0
+        total_sasa = sum(sasa_dict.values())
+
+        row: Dict[str, float] = {
+            "Model": label,
+            "HBonds": hbonds,
+            "Total_SASA": total_sasa,
+        }
+
+        for resid, area in sasa_dict.items():
+            col = f"SASA_{resid}"
+            row[col] = area
+            all_resids.add(resid)
+            detail_rows.append({
+                "Model": label,
+                "Residue": resid,
+                "SASA": area,
+            })
+
+        summary_rows.append(row)
+
+    df_summary = _pd.DataFrame(summary_rows)
+    resid_cols = [f"SASA_{resid}" for resid in sorted(all_resids)]
+    for col in resid_cols:
+        if col not in df_summary.columns:
+            df_summary[col] = _pd.NA
+    ordered_cols = ["Model", "HBonds", "Total_SASA"] + resid_cols
+    df_summary = df_summary[ordered_cols].sort_values("Model")
+
+    df_detail = _pd.DataFrame(detail_rows).sort_values(["Residue", "Model"])
+
+    summary_csv = os.path.join(out_dir, "sasa_hbonds_summary.csv")
+    detail_csv = os.path.join(out_dir, "sasa_per_residue.csv")
+
+    df_summary.to_csv(summary_csv, index=False)
+    df_detail.to_csv(detail_csv, index=False)
+
+    return summary_csv, detail_csv
