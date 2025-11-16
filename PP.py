@@ -34,6 +34,16 @@ ONE_TO_THREE = {
     "V": "VAL",
 }
 
+# ===== HOLE / WSL 默认配置（你只需要在自己电脑上改一次） =====
+# 1. 在 WSL 里执行 `conda info --base` 得到 conda 的 base 路径，比如：
+#    /home/k/miniforge3
+# 2. 把 HOLE_WSL_CONDA_INIT 改成  <base>/etc/profile.d/conda.sh
+# 3. 把 HOLE_WSL_CONDA_ENV 改成你安装 hole 的那个环境名（例如 "hole_env"）
+
+HOLE_WSL_CONDA_INIT = "$HOME/miniforge3/etc/profile.d/conda.sh"  # ← 根据实际路径改
+HOLE_WSL_CONDA_ENV = "hole_env"  # ← 根据实际 env 名改
+HOLE_WSL_EXE = "hole"  # env 里 HOLE 的命令名
+
 
 # ===========================
 # HOLE 管道相关工具函数
@@ -100,8 +110,17 @@ def hole_write_input(
     return out_path
 
 
-def hole_run_in_wsl(base_dir_win: str, model: str, hole_cmd: str = "hole") -> None:
-    """在 WSL 环境中运行 HOLE 命令。"""
+def hole_run_in_wsl(base_dir_win: str, model: str, hole_cmd: str = "") -> None:
+    """
+    在 WSL 环境中运行 HOLE。
+
+    参数 hole_cmd：
+      - 为空字符串 / "hole" / "auto"：走自动模式：
+            . HOLE_WSL_CONDA_INIT
+            conda activate HOLE_WSL_CONDA_ENV
+            HOLE_WSL_EXE < inp > log
+      - 其他非空：认为是高级用户手动指定的命令，原样执行。
+    """
 
     base_dir_win = (base_dir_win or "").rstrip("\\/")
     if not base_dir_win:
@@ -111,7 +130,22 @@ def hole_run_in_wsl(base_dir_win: str, model: str, hole_cmd: str = "hole") -> No
     inp_name = f"{model}_hole.inp"
     log_name = f"{model}_hole.log"
 
-    inner_cmd = f'cd "{base_dir_wsl}" && {hole_cmd} < {inp_name} > {log_name}'
+    # 决定在 WSL 里真正要执行的 HOLE 命令
+    cmd_raw = (hole_cmd or "").strip()
+    if not cmd_raw or cmd_raw.lower() in {"hole", "auto"}:
+        # —— 自动模式：使用上面配置的 conda 环境 ——
+        # 注意：假设 HOLE_WSL_CONDA_INIT / HOLE_WSL_CONDA_ENV / HOLE_WSL_EXE
+        # 已经被你改成正确值。
+        cmd_in_shell = (
+            f'. {HOLE_WSL_CONDA_INIT} && '
+            f'conda activate {HOLE_WSL_CONDA_ENV} && '
+            f'{HOLE_WSL_EXE}'
+        )
+    else:
+        # —— 高级模式：直接使用用户输入的一整串命令 ——
+        cmd_in_shell = cmd_raw
+
+    inner_cmd = f'cd "{base_dir_wsl}" && {cmd_in_shell} < {inp_name} > {log_name}'
     full_cmd = ["wsl", "bash", "-lc", inner_cmd]
     subprocess.run(full_cmd, check=True)
 
