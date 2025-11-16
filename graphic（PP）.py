@@ -176,7 +176,7 @@ def create_gui():
     ).pack(anchor="w", padx=10, pady=4)
 
     # ===== 功能选择 =====
-    feature_frame = tk.LabelFrame(research_container, text="要让 ChimeraX 自动干的事", padx=8, pady=8)
+    feature_frame = tk.LabelFrame(research_container, text="ChimeraX 自动化", padx=8, pady=8)
     feature_frame.pack(fill="x", padx=10, pady=5)
 
     full_var = tk.IntVar(value=1)
