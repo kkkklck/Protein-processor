@@ -1,8 +1,9 @@
 import os
+import shutil
 import tkinter as tk
 from tkinter import filedialog, messagebox
 
-from PP import build_cxc_script
+from PP import build_cxc_script, build_mutation_cxc
 
 
 def create_gui():
@@ -67,38 +68,22 @@ def create_gui():
 
         tk.Button(row_frame, text="浏览", command=browse_mutant).grid(row=0, column=4, padx=5)
 
-        # === 删除按钮 ===
-        def delete_row():
-            mutant_rows.remove(row_dict)
-            row_frame.destroy()
-
-        del_btn = tk.Button(row_frame, text="删除", fg="red", command=delete_row)
-        del_btn.grid(row=0, column=5, padx=5)
-
         row_dict = {
             "label_var": label_var,
             "pdb_var": pdb_var,
             "frame": row_frame,
-            "del_btn": del_btn
         }
+
+        def delete_row():
+            if row_dict in mutant_rows:
+                mutant_rows.remove(row_dict)
+            row_frame.destroy()
+
+        del_btn = tk.Button(row_frame, text="删除", fg="red", command=delete_row)
+        del_btn.grid(row=0, column=5, padx=5)
+        row_dict["del_btn"] = del_btn
+
         mutant_rows.append(row_dict)
-
-        def browse_mutant():
-            path = filedialog.askopenfilename(
-                title="选择突变体 PDB 文件",
-                filetypes=[("PDB files", "*.pdb"), ("All files", "*.*")]
-            )
-            if path:
-                pdb_var.set(path)
-
-        tk.Button(row_frame, text="浏览", command=browse_mutant).grid(row=0, column=4, padx=5)
-
-        mutant_rows.append({
-            "label_var": label_var,
-            "pdb_var": pdb_var,
-            "frame": row_frame,
-        })
-
     # 默认先给两行（方便你现在 DMI / DMT）
     add_mutant_row("DMI")
     add_mutant_row("DMT")
@@ -152,6 +137,36 @@ def create_gui():
         fg="#555"
     ).grid(row=1, column=0, columnspan=4, sticky="w", pady=(4, 0))
 
+    # ===== 突变体构建 (swapaa) =====
+    mut_builder_frame = tk.LabelFrame(root, text="突变体构建（swapaa）", padx=8, pady=8)
+    mut_builder_frame.pack(fill="x", padx=10, pady=5)
+
+    gen_mut_var = tk.IntVar(value=0)
+    mut_chain_var = tk.StringVar(value="A")
+    mut_residue_var = tk.StringVar()
+    mut_new_aa_var = tk.StringVar(value="ASP")
+
+    tk.Checkbutton(
+        mut_builder_frame,
+        text="生成突变体构建 cxc（swapaa）",
+        variable=gen_mut_var
+    ).grid(row=0, column=0, columnspan=4, sticky="w")
+
+    tk.Label(mut_builder_frame, text="链：").grid(row=1, column=0, sticky="w", pady=(6, 0))
+    tk.Entry(mut_builder_frame, textvariable=mut_chain_var, width=5).grid(row=1, column=1, sticky="w", pady=(6, 0))
+
+    tk.Label(mut_builder_frame, text="残基号：").grid(row=1, column=2, sticky="w", padx=(10, 0), pady=(6, 0))
+    tk.Entry(mut_builder_frame, textvariable=mut_residue_var, width=10).grid(row=1, column=3, sticky="w", pady=(6, 0))
+
+    tk.Label(mut_builder_frame, text="改成：").grid(row=2, column=0, sticky="w", pady=(6, 0))
+    tk.Entry(mut_builder_frame, textvariable=mut_new_aa_var, width=8).grid(row=2, column=1, sticky="w", pady=(6, 0))
+
+    tk.Label(
+        mut_builder_frame,
+        text="会把 WT 复制到输出目录/MUT/ 下，并生成同名 .cxc 用于 ChimeraX swapaa。",
+        fg="#555"
+    ).grid(row=3, column=0, columnspan=4, sticky="w", pady=(4, 0))
+
     # ===== 输出设置 =====
     out_frame = tk.LabelFrame(root, text="输出位置", padx=8, pady=8)
     out_frame.pack(fill="x", padx=10, pady=5)
@@ -193,12 +208,10 @@ def create_gui():
         # 收集突变体
         mutants = []
         for idx, row in enumerate(mutant_rows, start=1):
-            label = row["label_var"].get().strip()
+            label = row["label_var"].get().strip() or f"MUT{idx}"
             pdb = row["pdb_var"].get().strip()
             if not pdb:
                 continue  # 路径空就忽略这一行
-            if not label:
-                label = f"MUT{idx}"
             mutants.append({"label": label, "pdb": pdb})
 
         # 至少得有一个功能被勾选
@@ -256,12 +269,52 @@ def create_gui():
             messagebox.showerror("写文件失败", f"无法写入 .cxc 文件：\n{e}")
             return
 
-        messagebox.showinfo(
-            "完成",
+        mut_builder_outputs = []
+        if gen_mut_var.get():
+            if not mutant_rows:
+                messagebox.showerror("没有突变体", "请至少保留一行突变体标签，用于生成 swapaa 脚本。")
+                return
+
+            mut_chain = mut_chain_var.get().strip() or "A"
+            mut_residue = mut_residue_var.get().strip()
+            mut_new_aa = mut_new_aa_var.get().strip().upper()
+
+            if not mut_residue:
+                messagebox.showerror("缺少残基号", "请填写要突变的残基编号。")
+                return
+            if not mut_new_aa:
+                messagebox.showerror("缺少新氨基酸", "请填写要替换成的氨基酸三字母代码。")
+                return
+
+            mut_dir = os.path.join(out_dir, "MUT")
+
+            try:
+                os.makedirs(mut_dir, exist_ok=True)
+                for idx, row in enumerate(mutant_rows, start=1):
+                    mut_label = row["label_var"].get().strip() or f"MUT{idx}"
+                    wt_copy_path = os.path.join(mut_dir, f"{mut_label}.pdb")
+                    shutil.copy2(wt_pdb, wt_copy_path)
+                    cxc_file = build_mutation_cxc(
+                        wt_pdb,
+                        mut_label=mut_label,
+                        chain=mut_chain,
+                        residue=mut_residue,
+                        new_aa=mut_new_aa,
+                        out_dir=out_dir,
+                    )
+                    mut_builder_outputs.append(f"- {mut_label}: {cxc_file}")
+            except Exception as e:
+                messagebox.showerror("突变体构建失败", f"生成突变体 cxc 时出错：\n{e}")
+                return
+
+        msg = (
             f"已生成 ChimeraX 脚本：\n{cxc_path}\n\n"
-            "在 ChimeraX 命令行中执行：\n"
-            f"runscript {cxc_path}"
+            f"在 ChimeraX 命令行中执行：\nrunscript {cxc_path}"
         )
+        if mut_builder_outputs:
+            msg += "\n\n突变体构建 cxc：\n" + "\n".join(mut_builder_outputs)
+
+        messagebox.showinfo("完成", msg)
 
     btn_frame = tk.Frame(root)
     btn_frame.pack(fill="x", padx=10, pady=10)
