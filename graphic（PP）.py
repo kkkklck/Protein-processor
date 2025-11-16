@@ -322,6 +322,101 @@ def create_gui():
         variable=hole_parse_var,
     ).grid(row=7, column=2, columnspan=2, sticky="w", pady=(8, 0))
 
+    # ===== 自动推荐 cpoint / cvect 小工具 =====
+    axis_frame = tk.LabelFrame(hole_frame, text="自动推荐 cpoint / cvect", padx=8, pady=8)
+    axis_frame.grid(row=8, column=0, columnspan=4, sticky="we", pady=(10, 0))
+
+    axis_chain_var = tk.StringVar(value="A")
+    axis_res_expr_var = tk.StringVar(value="")
+    axis_log_var = tk.StringVar(value="axis_axis.log")
+
+    tk.Label(axis_frame, text="链 ID：").grid(row=0, column=0, sticky="w")
+    tk.Entry(axis_frame, textvariable=axis_chain_var, width=5).grid(row=0, column=1, sticky="w")
+
+    tk.Label(axis_frame, text="找轴残基表达式：").grid(row=0, column=2, sticky="w")
+    tk.Entry(axis_frame, textvariable=axis_res_expr_var, width=20).grid(row=0, column=3, sticky="w")
+
+    tk.Label(axis_frame, text="axis log 文件名：").grid(row=1, column=0, sticky="w", pady=(4, 0))
+    tk.Entry(axis_frame, textvariable=axis_log_var, width=20).grid(row=1, column=1, sticky="w", pady=(4, 0))
+
+    def on_generate_axis_cxc():
+        wt_pdb = wt_path_var.get().strip()
+        base_dir = hole_base_dir_var.get().strip()
+        chain = axis_chain_var.get().strip() or "A"
+        res_expr = axis_res_expr_var.get().strip()
+
+        if not wt_pdb:
+            messagebox.showerror("缺少 WT", "请先在上面选择 WT PDB。")
+            return
+        if not base_dir:
+            messagebox.showerror("缺少目录", "请先设置 HOLE 工作目录。")
+            return
+        if not res_expr:
+            messagebox.showerror("缺少残基", "请填写用于找轴的残基表达式（例如 298-300）。")
+            return
+
+        try:
+            axis_cxc = build_axis_cxc(
+                wt_pdb_path=wt_pdb,
+                chain_id=chain,
+                residue_expr=res_expr,
+                out_dir=base_dir,
+                label="axis",
+            )
+        except Exception as e:
+            messagebox.showerror("生成失败", f"创建找轴脚本时出错：\n{e}")
+            return
+
+        messagebox.showinfo(
+            "已生成找轴脚本",
+            "脚本路径：\n"
+            f"{axis_cxc}\n\n"
+            "接下来在 ChimeraX 中运行：\n"
+            f"runscript {axis_cxc}\n\n"
+            "跑完后会在 HOLE 目录生成 axis_axis.log。"
+        )
+
+    def on_fill_cpoint_from_axis_log():
+        base_dir = hole_base_dir_var.get().strip()
+        log_name = axis_log_var.get().strip() or "axis_axis.log"
+        if not base_dir:
+            messagebox.showerror("缺少目录", "请先设置 HOLE 工作目录。")
+            return
+
+        log_path = os.path.join(base_dir, log_name)
+        if not os.path.exists(log_path):
+            messagebox.showerror("找不到 log", f"没有发现日志文件：\n{log_path}")
+            return
+
+        try:
+            x, y, z = parse_axis_log(log_path)
+        except Exception as e:
+            messagebox.showerror("解析失败", f"解析质心坐标时出错：\n{e}")
+            return
+
+        hole_cpx_var.set(f"{x:.2f}")
+        hole_cpy_var.set(f"{y:.2f}")
+        hole_cpz_var.set(f"{z:.2f}")
+
+        hole_cvx_var.set("0.0")
+        hole_cvy_var.set("0.0")
+        hole_cvz_var.set("1.0")
+
+        messagebox.showinfo(
+            "已填入推荐轴",
+            f"推荐 cpoint = ({x:.2f}, {y:.2f}, {z:.2f})\n"
+            "cvect 已设为 (0.0, 0.0, 1.0)。"
+        )
+
+    tk.Button(axis_frame, text="生成找轴 .cxc", command=on_generate_axis_cxc).grid(
+        row=2, column=0, columnspan=2, sticky="w", pady=(6, 0)
+    )
+    tk.Button(
+        axis_frame,
+        text="从 axis log 填入 cpoint/cvect",
+        command=on_fill_cpoint_from_axis_log,
+    ).grid(row=2, column=2, columnspan=2, sticky="w", pady=(6, 0))
+
     # ===== 生成按钮 =====
     def on_generate():
         wt_pdb = wt_path_var.get().strip()
@@ -549,9 +644,42 @@ def create_gui():
     btn_frame.pack(fill="x", padx=10, pady=10)
 
     tk.Button(btn_frame, text="生成 .cxc", command=on_generate, width=15).pack(side="left")
+
+    def on_summarize_sasa_hbonds():
+        out_dir = out_dir_var.get().strip()
+        if not out_dir:
+            messagebox.showerror("缺少输出目录", "请先在上面设置“图片 / 文本输出目录”。")
+            return
+
+        try:
+            summary_csv, detail_csv = summarize_sasa_hbonds(out_dir)
+        except Exception as e:
+            messagebox.showerror("汇总失败", f"解析 SASA/H-bonds 日志时出错：\n{e}")
+            return
+
+        messagebox.showinfo(
+            "汇总完成",
+            "已生成：\n"
+            f"{summary_csv}\n"
+            f"{detail_csv}\n\n"
+            "可以用 Excel 打开做对比分析。"
+        )
+
+    tk.Button(
+        btn_frame,
+        text="汇总 SASA / H-bonds",
+        command=on_summarize_sasa_hbonds,
+        width=18,
+    ).pack(side="left", padx=8)
+
     tk.Label(
         btn_frame,
-        text="窗口不会自动退出，你可以多次修改参数反复生成不同的 .cxc。",
+        text="先在 ChimeraX 里 runscript 跑完，再点汇总，就会吐出 CSV 指标表。",
+        fg="#555"
+    ).pack(side="left", padx=10)
+    tk.Label(
+        btn_frame,
+        text="窗口不会自动退出。",
         fg="#555"
     ).pack(side="left", padx=10)
 
