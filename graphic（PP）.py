@@ -13,8 +13,38 @@ def create_gui():
     # 整体窗口稍微宽一点
     root.geometry("900x600")
 
+    # ===== 外层可滚动区域（大滚动条） =====
+    canvas = tk.Canvas(root, highlightthickness=0)
+    vbar = tk.Scrollbar(root, orient="vertical", command=canvas.yview)
+    canvas.configure(yscrollcommand=vbar.set)
+
+    vbar.pack(side="right", fill="y")
+    canvas.pack(side="left", fill="both", expand=True)
+
+    # 真正放控件的地方，全都往这个 content 里塞
+    content = tk.Frame(canvas)
+    content_window = canvas.create_window((0, 0), window=content, anchor="nw")
+
+    # 内容大小变化时，更新滚动区域
+    def _on_content_config(event):
+        canvas.configure(scrollregion=canvas.bbox("all"))
+
+    content.bind("<Configure>", _on_content_config)
+
+    # 画布大小变化时，让 content 宽度跟着变，避免只占左侧一小条
+    def _on_canvas_config(event):
+        canvas.itemconfig(content_window, width=event.width)
+
+    canvas.bind("<Configure>", _on_canvas_config)
+
+    # 绑定鼠标滚轮（Windows）
+    def _on_mousewheel(event):
+        canvas.yview_scroll(int(-event.delta / 120), "units")
+
+    canvas.bind_all("<MouseWheel>", _on_mousewheel)
+
     # ===== WT 区 =====
-    wt_frame = tk.LabelFrame(root, text="WT PDB", padx=8, pady=8)
+    wt_frame = tk.LabelFrame(content, text="WT PDB", padx=8, pady=8)
     wt_frame.pack(fill="x", padx=10, pady=5)
 
     wt_path_var = tk.StringVar()
@@ -34,7 +64,7 @@ def create_gui():
     tk.Button(wt_frame, text="浏览", command=browse_wt).grid(row=0, column=2, padx=5)
 
     # ===== 突变体区 =====
-    mutants_outer = tk.LabelFrame(root, text="突变体 PDB（可选，多条）", padx=8, pady=8)
+    mutants_outer = tk.LabelFrame(content, text="突变体 PDB（可选，多条）", padx=8, pady=8)
     mutants_outer.pack(fill="both", padx=10, pady=5, expand=True)
 
     scroll = ScrollableFrame(mutants_outer)
@@ -91,7 +121,7 @@ def create_gui():
     tk.Button(mutants_frame, text="添加突变体", command=add_mutant_row).pack(anchor="w", pady=4)
 
     # ===== 功能选择 =====
-    feature_frame = tk.LabelFrame(root, text="要让 ChimeraX 自动干的事", padx=8, pady=8)
+    feature_frame = tk.LabelFrame(content, text="要让 ChimeraX 自动干的事", padx=8, pady=8)
     feature_frame.pack(fill="x", padx=10, pady=5)
 
     full_var = tk.IntVar(value=1)
@@ -119,7 +149,7 @@ def create_gui():
     ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(4, 0))
 
     # ===== 目标残基 & 链 =====
-    target_frame = tk.LabelFrame(root, text="目标残基（可选，不一定是三联体）", padx=8, pady=8)
+    target_frame = tk.LabelFrame(content, text="目标残基（可选，不一定是三联体）", padx=8, pady=8)
     target_frame.pack(fill="x", padx=10, pady=5)
 
     chain_var = tk.StringVar(value="A")
@@ -138,7 +168,7 @@ def create_gui():
     ).grid(row=1, column=0, columnspan=4, sticky="w", pady=(4, 0))
 
     # ===== 突变体构建 (swapaa) =====
-    mut_builder_frame = tk.LabelFrame(root, text="突变体构建（swapaa）", padx=8, pady=8)
+    mut_builder_frame = tk.LabelFrame(content, text="突变体构建（swapaa）", padx=8, pady=8)
     mut_builder_frame.pack(fill="x", padx=10, pady=5)
 
     gen_mut_var = tk.IntVar(value=0)
@@ -168,7 +198,7 @@ def create_gui():
     ).grid(row=3, column=0, columnspan=4, sticky="w", pady=(4, 0))
 
     # ===== 输出设置 =====
-    out_frame = tk.LabelFrame(root, text="输出位置", padx=8, pady=8)
+    out_frame = tk.LabelFrame(content, text="输出位置", padx=8, pady=8)
     out_frame.pack(fill="x", padx=10, pady=5)
 
     out_dir_var = tk.StringVar(value=os.path.join("D:\\", "demo"))
@@ -269,54 +299,14 @@ def create_gui():
             messagebox.showerror("写文件失败", f"无法写入 .cxc 文件：\n{e}")
             return
 
-        mut_builder_outputs = []
-        if gen_mut_var.get():
-            if not mutant_rows:
-                messagebox.showerror("没有突变体", "请至少保留一行突变体标签，用于生成 swapaa 脚本。")
-                return
-
-            mut_chain = mut_chain_var.get().strip() or "A"
-            mut_residue = mut_residue_var.get().strip()
-            mut_new_aa = mut_new_aa_var.get().strip().upper()
-
-            if not mut_residue:
-                messagebox.showerror("缺少残基号", "请填写要突变的残基编号。")
-                return
-            if not mut_new_aa:
-                messagebox.showerror("缺少新氨基酸", "请填写要替换成的氨基酸三字母代码。")
-                return
-
-            mut_dir = os.path.join(out_dir, "MUT")
-
-            try:
-                os.makedirs(mut_dir, exist_ok=True)
-                for idx, row in enumerate(mutant_rows, start=1):
-                    mut_label = row["label_var"].get().strip() or f"MUT{idx}"
-                    wt_copy_path = os.path.join(mut_dir, f"{mut_label}.pdb")
-                    shutil.copy2(wt_pdb, wt_copy_path)
-                    cxc_file = build_mutation_cxc(
-                        wt_pdb,
-                        mut_label=mut_label,
-                        chain=mut_chain,
-                        residue=mut_residue,
-                        new_aa=mut_new_aa,
-                        out_dir=out_dir,
-                    )
-                    mut_builder_outputs.append(f"- {mut_label}: {cxc_file}")
-            except Exception as e:
-                messagebox.showerror("突变体构建失败", f"生成突变体 cxc 时出错：\n{e}")
-                return
-
-        msg = (
+        messagebox.showinfo(
+            "完成",
             f"已生成 ChimeraX 脚本：\n{cxc_path}\n\n"
-            f"在 ChimeraX 命令行中执行：\nrunscript {cxc_path}"
+            "在 ChimeraX 命令行中执行：\n"
+            f"runscript {cxc_path}"
         )
-        if mut_builder_outputs:
-            msg += "\n\n突变体构建 cxc：\n" + "\n".join(mut_builder_outputs)
 
-        messagebox.showinfo("完成", msg)
-
-    btn_frame = tk.Frame(root)
+    btn_frame = tk.Frame(content)
     btn_frame.pack(fill="x", padx=10, pady=10)
 
     tk.Button(btn_frame, text="生成 .cxc", command=on_generate, width=15).pack(side="left")
