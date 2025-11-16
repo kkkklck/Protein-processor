@@ -3,7 +3,14 @@ import shutil
 import tkinter as tk
 from tkinter import filedialog, messagebox
 
-from PP import build_cxc_script, build_mutation_cxc
+from PP import (
+    build_cxc_script,
+    build_mutation_cxc,
+    hole_write_input,
+    hole_run_in_wsl,
+    hole_summarize_logs,
+    hole_plot_profiles,
+)
 
 
 def create_gui():
@@ -66,16 +73,20 @@ def create_gui():
     # ===== 模式切换 =====
     research_container = tk.Frame(content)
     mutate_container = tk.Frame(content)
+    hole_container = tk.Frame(content)
 
-    mode_var = tk.StringVar(value="research")
+    mode_var = tk.StringVar(value="research")  # "research" / "mutate" / "hole"
 
     def update_mode():
-        if mode_var.get() == "research":
-            mutate_container.pack_forget()
+        mode = mode_var.get()
+        for frame in (research_container, mutate_container, hole_container):
+            frame.pack_forget()
+        if mode == "research":
             research_container.pack(fill="both", expand=True)
-        else:
-            research_container.pack_forget()
+        elif mode == "mutate":
             mutate_container.pack(fill="both", expand=True)
+        else:
+            hole_container.pack(fill="both", expand=True)
 
     mode_frame = tk.Frame(wt_frame)
     mode_frame.grid(row=0, column=3, padx=10, sticky="w")
@@ -91,6 +102,13 @@ def create_gui():
         mode_frame,
         text="突变",
         value="mutate",
+        variable=mode_var,
+        command=update_mode
+    ).pack(side="left", padx=(4, 0))
+    tk.Radiobutton(
+        mode_frame,
+        text="HOLE",
+        value="hole",
         variable=mode_var,
         command=update_mode
     ).pack(side="left", padx=(4, 0))
@@ -235,6 +253,76 @@ def create_gui():
 
     tk.Button(out_frame, text="浏览", command=browse_cxc_file).grid(row=1, column=2, padx=5, pady=(6, 0))
 
+    # ===== HOLE 管道配置 =====
+    hole_frame = tk.LabelFrame(hole_container, text="HOLE 管道配置", padx=8, pady=8)
+    hole_frame.pack(fill="x", padx=10, pady=5)
+    hole_frame.grid_columnconfigure(1, weight=1)
+    hole_frame.grid_columnconfigure(3, weight=1)
+
+    hole_base_dir_var = tk.StringVar(value=r"D:\demo\hole")
+    tk.Label(hole_frame, text="HOLE 工作目录：").grid(row=0, column=0, sticky="w")
+    tk.Entry(hole_frame, textvariable=hole_base_dir_var, width=60).grid(row=0, column=1, columnspan=2, sticky="we")
+
+    def browse_hole_dir():
+        path = filedialog.askdirectory(title="选择 HOLE 工作目录")
+        if path:
+            hole_base_dir_var.set(path)
+
+    tk.Button(hole_frame, text="浏览", command=browse_hole_dir).grid(row=0, column=3, padx=5)
+
+    hole_models_var = tk.StringVar(value="WT,DMI,DMT,GT,ND")
+    tk.Label(hole_frame, text="模型列表（逗号分隔）：").grid(row=1, column=0, sticky="w", pady=(6, 0))
+    tk.Entry(hole_frame, textvariable=hole_models_var, width=60).grid(row=1, column=1, columnspan=3, sticky="we", pady=(6, 0))
+
+    hole_cpx_var = tk.StringVar(value="38.30")
+    hole_cpy_var = tk.StringVar(value="7.55")
+    hole_cpz_var = tk.StringVar(value="-22.15")
+    hole_cvx_var = tk.StringVar(value="0.0")
+    hole_cvy_var = tk.StringVar(value="0.0")
+    hole_cvz_var = tk.StringVar(value="1.0")
+
+    tk.Label(hole_frame, text="cpoint (Å)：").grid(row=2, column=0, sticky="w", pady=(6, 0))
+    tk.Entry(hole_frame, textvariable=hole_cpx_var, width=8).grid(row=2, column=1, sticky="w", pady=(6, 0))
+    tk.Entry(hole_frame, textvariable=hole_cpy_var, width=8).grid(row=2, column=2, sticky="w", pady=(6, 0))
+    tk.Entry(hole_frame, textvariable=hole_cpz_var, width=8).grid(row=2, column=3, sticky="w", pady=(6, 0))
+
+    tk.Label(hole_frame, text="cvect：").grid(row=3, column=0, sticky="w", pady=(6, 0))
+    tk.Entry(hole_frame, textvariable=hole_cvx_var, width=8).grid(row=3, column=1, sticky="w", pady=(6, 0))
+    tk.Entry(hole_frame, textvariable=hole_cvy_var, width=8).grid(row=3, column=2, sticky="w", pady=(6, 0))
+    tk.Entry(hole_frame, textvariable=hole_cvz_var, width=8).grid(row=3, column=3, sticky="w", pady=(6, 0))
+
+    hole_sample_var = tk.StringVar(value="0.25")
+    hole_endrad_var = tk.StringVar(value="15.0")
+    tk.Label(hole_frame, text="sample (Å)：").grid(row=4, column=0, sticky="w", pady=(6, 0))
+    tk.Entry(hole_frame, textvariable=hole_sample_var, width=8).grid(row=4, column=1, sticky="w", pady=(6, 0))
+    tk.Label(hole_frame, text="endrad (Å)：").grid(row=4, column=2, sticky="w", pady=(6, 0))
+    tk.Entry(hole_frame, textvariable=hole_endrad_var, width=8).grid(row=4, column=3, sticky="w", pady=(6, 0))
+
+    hole_radius_var = tk.StringVar(value="simple.rad")
+    tk.Label(hole_frame, text="radius 文件名：").grid(row=5, column=0, sticky="w", pady=(6, 0))
+    tk.Entry(hole_frame, textvariable=hole_radius_var, width=20).grid(row=5, column=1, sticky="w", pady=(6, 0))
+
+    hole_cmd_var = tk.StringVar(value="hole")
+    tk.Label(hole_frame, text="HOLE 命令：").grid(row=6, column=0, sticky="w", pady=(6, 0))
+    tk.Entry(hole_frame, textvariable=hole_cmd_var, width=20).grid(row=6, column=1, sticky="w", pady=(6, 0))
+
+    hole_run_var = tk.IntVar(value=0)
+    hole_parse_var = tk.IntVar(value=1)
+    tk.Checkbutton(
+        hole_frame,
+        text="自动在 WSL 中调用 HOLE",
+        variable=hole_run_var,
+    ).grid(row=7, column=0, columnspan=2, sticky="w", pady=(8, 0))
+    tk.Checkbutton(
+        hole_frame,
+        text="根据 *_hole.log 生成 CSV & 曲线图",
+        variable=hole_parse_var,
+    ).grid(row=7, column=2, columnspan=2, sticky="w", pady=(8, 0))
+
+    hole_btn_frame = tk.Frame(hole_container)
+    hole_btn_frame.pack(fill="x", padx=10, pady=10)
+    tk.Button(hole_btn_frame, text="执行 HOLE 管道", command=on_generate, width=18).pack(side="left")
+
     # ===== 生成按钮 =====
     def on_generate():
         wt_pdb = wt_path_var.get().strip()
@@ -242,7 +330,9 @@ def create_gui():
             messagebox.showerror("缺少 WT", "请先选择 WT 的 PDB 文件。")
             return
 
-        if mode_var.get() == "mutate":
+        mode = mode_var.get()
+
+        if mode == "mutate":
             mut_out_dir = mut_out_dir_var.get().strip()
             if not mut_out_dir:
                 messagebox.showerror("缺少输出目录", "请选择突变体输出目录。")
@@ -294,6 +384,98 @@ def create_gui():
                 "在 ChimeraX 中执行：\n"
                 f"runscript {generated_paths[0]}"
             )
+            return
+
+        if mode == "hole":
+            base_dir = hole_base_dir_var.get().strip()
+            if not base_dir:
+                messagebox.showerror("缺少目录", "请选择 HOLE 工作目录。")
+                return
+
+            models = [m.strip() for m in hole_models_var.get().split(",") if m.strip()]
+            if not models:
+                messagebox.showerror("缺少模型", "请至少填写一个模型名。")
+                return
+
+            try:
+                cpoint = (
+                    float(hole_cpx_var.get()),
+                    float(hole_cpy_var.get()),
+                    float(hole_cpz_var.get()),
+                )
+                cvect = (
+                    float(hole_cvx_var.get()),
+                    float(hole_cvy_var.get()),
+                    float(hole_cvz_var.get()),
+                )
+                sample = float(hole_sample_var.get())
+                endrad = float(hole_endrad_var.get())
+            except ValueError:
+                messagebox.showerror("参数错误", "cpoint/cvect/sample/endrad 请输入数字。")
+                return
+
+            radius_file = hole_radius_var.get().strip() or "simple.rad"
+            hole_cmd = hole_cmd_var.get().strip() or "hole"
+            run_flag = bool(hole_run_var.get())
+            parse_flag = bool(hole_parse_var.get())
+
+            for m in models:
+                try:
+                    hole_write_input(
+                        base_dir_win=base_dir,
+                        model=m,
+                        cpoint=cpoint,
+                        cvect=cvect,
+                        sample=sample,
+                        endrad=endrad,
+                        radius_filename=radius_file,
+                    )
+                except Exception as e:
+                    messagebox.showerror("生成失败", f"写入 {m} 的 HOLE 输入时出错：\n{e}")
+                    return
+
+            if run_flag:
+                for m in models:
+                    try:
+                        hole_run_in_wsl(base_dir_win=base_dir, model=m, hole_cmd=hole_cmd)
+                    except Exception as e:
+                        messagebox.showerror("HOLE 运行失败", f"{m} 出错：{e}")
+                        return
+
+            summary_msg = []
+            if parse_flag:
+                logs = {}
+                for m in models:
+                    log_path = os.path.join(base_dir, f"{m}_hole.log")
+                    if os.path.exists(log_path):
+                        logs[m] = log_path
+                    else:
+                        summary_msg.append(f"警告：没找到 {m}_hole.log，跳过。")
+
+                if logs:
+                    try:
+                        hole_summarize_logs(logs, base_dir)
+                        fig_path = hole_plot_profiles(logs, base_dir)
+                        summary_msg.append(
+                            "已生成：hole_profile_samples.csv, hole_min_table.csv, "
+                            "hole_min_summary.csv, "
+                            f"{os.path.basename(fig_path)}"
+                        )
+                    except Exception as e:
+                        messagebox.showerror("后处理失败", f"解析 log 或绘图时出错：\n{e}")
+                        return
+
+            msg_lines = [
+                "已为下列模型生成 HOLE 输入文件：",
+                ", ".join(models),
+            ]
+            if run_flag:
+                msg_lines.append("已尝试在 WSL 中运行 HOLE。")
+            if summary_msg:
+                msg_lines.append("")
+                msg_lines.extend(summary_msg)
+
+            messagebox.showinfo("HOLE 管道完成", "\n".join(msg_lines))
             return
 
         # ===== 研究模式 =====
