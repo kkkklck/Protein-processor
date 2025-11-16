@@ -1,5 +1,5 @@
 from typing import List, Dict
-import os
+import os, re
 import shutil
 
 # 一字母 → 三字母氨基酸代码映射，只包含标准 20 个
@@ -36,6 +36,16 @@ def normalize_path_for_chimerax(path: str) -> str:
     return p.replace("\\", "/")
 
 
+def _split_multi_value(value: str) -> List[str]:
+    """把用户输入里用逗号、空格或分号分隔的值拆成列表。"""
+    if not value:
+        return []
+    # 允许中文逗号（有些输入法会产生）
+    value = value.replace("，", ",")
+    parts = re.split(r"[;,\s]+", value)
+    return [p for p in (part.strip() for part in parts) if p]
+
+
 def build_mutation_cxc(
         wt_pdb_path: str,
         mut_label: str,
@@ -58,37 +68,69 @@ def build_mutation_cxc(
     os.makedirs(mut_dir, exist_ok=True)
     mut_dir_cx = normalize_path_for_chimerax(mut_dir)
 
-    chain = (chain or "A").strip()
-    residue = str(residue).strip()
+    residues = _split_multi_value(str(residue).strip())
+    aas_raw = [item.upper() for item in _split_multi_value(new_aa)]
+    chains = _split_multi_value(chain) or ["A"]
 
-    aa_raw = new_aa.strip().upper()
-    if len(aa_raw) == 1:
-        # 一字母代码 → 三字母
-        if aa_raw not in ONE_TO_THREE:
-            raise ValueError(f"不认识的氨基酸一字母代码：{aa_raw}")
-        aa = ONE_TO_THREE[aa_raw]
-    elif len(aa_raw) == 3:
-        # 已经是三字母，直接用
-        aa = aa_raw
-    else:
-        raise ValueError(
-            f"氨基酸名请用一字母或三字母，比如 N / ASN，不要用其他奇怪写法（现在是：{aa_raw}）"
-        )
+    if not residues:
+        raise ValueError("至少需要提供一个残基号。")
+    if not aas_raw:
+        raise ValueError("至少需要提供一个目标氨基酸。")
+
+    if len(chains) == 1:
+        chains *= len(residues)
+    elif len(chains) != len(residues):
+        raise ValueError("链 ID 数量需要和残基号数量一致（或只填一个链 ID）。")
+
+    if len(aas_raw) == 1:
+        aas_raw *= len(residues)
+    elif len(aas_raw) != len(residues):
+        raise ValueError("目标氨基酸数量需要和残基号数量一致（或只填一个氨基酸）。")
+
+    mutation_steps = []
+    for ch, res, aa_raw in zip(chains, residues, aas_raw):
+        aa_raw = aa_raw.strip()
+        if len(aa_raw) == 1:
+            if aa_raw not in ONE_TO_THREE:
+                raise ValueError(f"不认识的氨基酸一字母代码：{aa_raw}")
+            aa = ONE_TO_THREE[aa_raw]
+        elif len(aa_raw) == 3:
+            aa = aa_raw
+        else:
+            raise ValueError(
+                f"氨基酸名请用一字母或三字母，比如 N / ASN（现在是：{aa_raw}）"
+            )
+        mutation_steps.append({
+            "chain": ch or "A",
+            "residue": res,
+            "aa": aa,
+        })
 
     cxc_path = os.path.join(mut_dir, f"{mut_label}.cxc")
 
+    mut_lines = ["# ChimeraX swapaa 语法：swapaa <残基选择> <目标氨基酸>"]
+    for idx, step in enumerate(mutation_steps, start=1):
+        desc = f"{step['chain']}:{step['residue']} -> {step['aa']}"
+        mut_lines.append(f"# Step {idx}: {desc}")
+        mut_lines.append(
+            "swapaa #1/{chain}:{residue} {aa}".format(
+                chain=step["chain"],
+                residue=step["residue"],
+                aa=step["aa"],
+            )
+        )
+
     script = f"""# === 自动突变：{mut_label} ===
-close all
+    close all
 
-open "{wt_cx}"
+    open "{wt_cx}"
 
-# ChimeraX swapaa 语法：swapaa <残基选择> <目标氨基酸>
-swapaa #1/{chain}:{residue} {aa}
+    {os.linesep.join(mut_lines)}
 
-save "{mut_dir_cx}/{mut_label}.pdb"
+    save "{mut_dir_cx}/{mut_label}.pdb"
 
-close all
-"""
+    close all
+    """
 
     with open(cxc_path, "w", encoding="utf-8") as f:
         f.write(script)
