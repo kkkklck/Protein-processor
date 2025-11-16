@@ -1,6 +1,14 @@
-from typing import List, Dict
+from typing import List, Dict, Tuple
 import os, re
 import shutil
+import subprocess
+
+try:
+    import pandas as _pd
+    import matplotlib.pyplot as _plt
+except Exception:  # pragma: no cover - optional deps
+    _pd = None
+    _plt = None
 
 # 一字母 → 三字母氨基酸代码映射，只包含标准 20 个
 ONE_TO_THREE = {
@@ -26,6 +34,165 @@ ONE_TO_THREE = {
     "V": "VAL",
 }
 
+
+# ===========================
+# HOLE 管道相关工具函数
+# ===========================
+
+
+def hole_win_to_wsl(path: str) -> str:
+    """把 Windows 风格路径转换为 WSL 路径。"""
+    if path is None:
+        raise ValueError("path 不可为空。")
+    cleaned = path.strip().strip('"').strip("'")
+    if not cleaned:
+        raise ValueError("path 为空，无法转换。")
+    if cleaned.startswith("/"):
+        return cleaned
+    if len(cleaned) >= 2 and cleaned[1] == ":":
+        drive = cleaned[0].lower()
+        tail = cleaned[2:].lstrip("\\/")
+        tail = tail.replace("\\", "/")
+        return f"/mnt/{drive}/{tail}"
+    raise ValueError(f"无法识别的 Windows 路径：{path}")
+
+
+def hole_write_input(
+    base_dir_win: str,
+    model: str,
+    cpoint: Tuple[float, float, float],
+    cvect: Tuple[float, float, float],
+    sample: float = 0.25,
+    endrad: float = 15.0,
+    radius_filename: str = "simple.rad",
+) -> str:
+    """根据配置生成 HOLE 所需的 .inp 文件。"""
+
+    base_dir_win = (base_dir_win or "").rstrip("\\/")
+    if not base_dir_win:
+        raise ValueError("base_dir_win 不能为空")
+    base_dir_wsl = hole_win_to_wsl(base_dir_win)
+
+    coord_wsl = f"{base_dir_wsl}/{model}.pdb"
+    radius_wsl = f"{base_dir_wsl}/{radius_filename}"
+    sphpdb_wsl = f"{base_dir_wsl}/{model}_hole_spheres.pdb"
+    mappdb_wsl = f"{base_dir_wsl}/{model}_hole_profile.pdb"
+
+    cpx, cpy, cpz = cpoint
+    cvx, cvy, cvz = cvect
+
+    lines = [
+        f"coord  {coord_wsl}",
+        f"radius {radius_wsl}",
+        f"cpoint {cpx:.2f} {cpy:.2f} {cpz:.2f}",
+        f"cvect  {cvx:.2f} {cvy:.2f} {cvz:.2f}",
+        f"sample {sample:.2f}",
+        f"endrad {endrad:.2f}",
+        "ignore HOH",
+        f"sphpdb {sphpdb_wsl}",
+        f"mappdb {mappdb_wsl}",
+        "",
+    ]
+
+    out_path = base_dir_win + f"\\{model}_hole.inp"
+    with open(out_path, "w", encoding="ascii", errors="ignore") as f:
+        f.write("\n".join(lines))
+    return out_path
+
+
+def hole_run_in_wsl(base_dir_win: str, model: str, hole_cmd: str = "hole") -> None:
+    """在 WSL 环境中运行 HOLE 命令。"""
+
+    base_dir_win = (base_dir_win or "").rstrip("\\/")
+    if not base_dir_win:
+        raise ValueError("base_dir_win 不能为空")
+    base_dir_wsl = hole_win_to_wsl(base_dir_win)
+
+    inp_name = f"{model}_hole.inp"
+    log_name = f"{model}_hole.log"
+
+    inner_cmd = f'cd "{base_dir_wsl}" && {hole_cmd} < {inp_name} > {log_name}'
+    full_cmd = ["wsl", "bash", "-lc", inner_cmd]
+    subprocess.run(full_cmd, check=True)
+
+
+def hole_parse_profile(log_path: str) -> List[Tuple[float, float]]:
+    """从 HOLE 日志中提取 profile 数据。"""
+
+    profile: List[Tuple[float, float]] = []
+    with open(log_path, "r", encoding="utf-8", errors="ignore") as f:
+        for line in f:
+            if "mid-point" in line or "(sampled)" in line:
+                parts = line.split()
+                if len(parts) < 2:
+                    continue
+                try:
+                    s = float(parts[0])
+                    r = float(parts[1])
+                except ValueError:
+                    continue
+                profile.append((s, r))
+    if not profile:
+        raise ValueError(f"日志中没有 profile 信息：{log_path}")
+    return profile
+
+
+def hole_summarize_logs(log_paths: Dict[str, str], out_dir: str) -> None:
+    """根据多个 HOLE 日志生成 CSV 汇总。"""
+
+    if _pd is None:
+        raise RuntimeError("需要安装 pandas 才能生成 CSV 汇总。")
+
+    profiles_rows: List[Dict[str, float]] = []
+    min_table_rows: List[Dict[str, float]] = []
+    min_summary_rows: List[Dict[str, str]] = []
+
+    for model, path in log_paths.items():
+        prof = hole_parse_profile(path)
+        for s, r in prof:
+            profiles_rows.append({"Model": model, "s_A": s, "r_A": r})
+        s_min, r_min = min(prof, key=lambda item: item[1])
+        min_table_rows.append({"Model": model, "s_min_A": s_min, "r_min_A": r_min})
+        min_summary_rows.append({
+            "Model": model,
+            "Summary": f"Minimum radius found: {r_min:8.3f} Å at s = {s_min:8.3f} Å",
+        })
+
+    os.makedirs(out_dir, exist_ok=True)
+    _pd.DataFrame(profiles_rows).to_csv(os.path.join(out_dir, "hole_profile_samples.csv"), index=False)
+    _pd.DataFrame(min_table_rows).to_csv(os.path.join(out_dir, "hole_min_table.csv"), index=False)
+    _pd.DataFrame(min_summary_rows).to_csv(os.path.join(out_dir, "hole_min_summary.csv"), index=False)
+
+
+def hole_plot_profiles(
+    log_paths: Dict[str, str],
+    out_dir: str,
+    out_name: str = "hole_profiles.png",
+) -> str:
+    """把多条 profile 曲线绘制成图像。"""
+
+    if _plt is None:
+        raise RuntimeError("需要安装 matplotlib 才能绘图。")
+
+    profiles = {model: hole_parse_profile(path) for model, path in log_paths.items()}
+
+    os.makedirs(out_dir, exist_ok=True)
+    _plt.figure(figsize=(6, 4))
+    for model, prof in profiles.items():
+        s_vals = [s for s, _ in prof]
+        r_vals = [r for _, r in prof]
+        _plt.plot(s_vals, r_vals, label=model)
+
+    _plt.axhline(0.0, linestyle="--", linewidth=0.8)
+    _plt.xlabel("s (Å)")
+    _plt.ylabel("Hole radius (Å)")
+    _plt.legend()
+    _plt.tight_layout()
+
+    out_path = os.path.join(out_dir, out_name)
+    _plt.savefig(out_path, dpi=300)
+    _plt.close()
+    return out_path
 
 def normalize_path_for_chimerax(path: str) -> str:
     """
