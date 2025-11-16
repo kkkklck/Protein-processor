@@ -2,6 +2,31 @@ from typing import List, Dict
 import os
 import shutil
 
+# 一字母 → 三字母氨基酸代码映射，只包含标准 20 个
+ONE_TO_THREE = {
+    "A": "ALA",
+    "R": "ARG",
+    "N": "ASN",
+    "D": "ASP",
+    "C": "CYS",
+    "Q": "GLN",
+    "E": "GLU",
+    "G": "GLY",
+    "H": "HIS",
+    "I": "ILE",
+    "L": "LEU",
+    "K": "LYS",
+    "M": "MET",
+    "F": "PHE",
+    "P": "PRO",
+    "S": "SER",
+    "T": "THR",
+    "W": "TRP",
+    "Y": "TYR",
+    "V": "VAL",
+}
+
+
 def normalize_path_for_chimerax(path: str) -> str:
     """
     把 Windows 路径变成 ChimeraX 好用的样子：
@@ -18,31 +43,52 @@ def build_mutation_cxc(
         residue: str,
         new_aa: str,
         out_dir: str,
-):
+) -> str:
     """
     自动生成突变体的 cxc，用 ChimeraX 一键构建突变体。
     out_dir/MUT/ 下生成:
         OsAKT_xxx.cxc
         OsAKT_xxx.pdb (由 ChimeraX 生成)
     """
+    # 规范一下路径和参数
     out_dir_cx = normalize_path_for_chimerax(out_dir)
     wt_cx = normalize_path_for_chimerax(wt_pdb_path)
 
     mut_dir = os.path.join(out_dir, "MUT")
     os.makedirs(mut_dir, exist_ok=True)
+    mut_dir_cx = normalize_path_for_chimerax(mut_dir)
+
+    chain = (chain or "A").strip()
+    residue = str(residue).strip()
+
+    aa_raw = new_aa.strip().upper()
+    if len(aa_raw) == 1:
+        # 一字母代码 → 三字母
+        if aa_raw not in ONE_TO_THREE:
+            raise ValueError(f"不认识的氨基酸一字母代码：{aa_raw}")
+        aa = ONE_TO_THREE[aa_raw]
+    elif len(aa_raw) == 3:
+        # 已经是三字母，直接用
+        aa = aa_raw
+    else:
+        raise ValueError(
+            f"氨基酸名请用一字母或三字母，比如 N / ASN，不要用其他奇怪写法（现在是：{aa_raw}）"
+        )
 
     cxc_path = os.path.join(mut_dir, f"{mut_label}.cxc")
 
-    script = f"""
-    # === 自动突变：{mut_label} ===
-    open "{wt_cx}"
+    script = f"""# === 自动突变：{mut_label} ===
+close all
 
-    swapaa {new_aa} #{{1}}/{chain}:{residue} rotamer True
+open "{wt_cx}"
 
-    save "{out_dir_cx}/MUT/{mut_label}.pdb"
+# ChimeraX swapaa 语法：swapaa <残基选择> <目标氨基酸>
+swapaa #1/{chain}:{residue} {aa}
 
-    close all
-    """
+save "{mut_dir_cx}/{mut_label}.pdb"
+
+close all
+"""
 
     with open(cxc_path, "w", encoding="utf-8") as f:
         f.write(script)
@@ -214,4 +260,3 @@ def build_cxc_script(
 
     add("# === 脚本结束 ===")
     return "\n".join(lines) + "\n"
-
