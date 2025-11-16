@@ -11,6 +11,45 @@ def normalize_path_for_chimerax(path: str) -> str:
     return p.replace("\\", "/")
 
 
+def build_mutation_cxc(
+        wt_pdb_path: str,
+        mut_label: str,
+        chain: str,
+        residue: str,
+        new_aa: str,
+        out_dir: str,
+):
+    """
+    自动生成突变体的 cxc，用 ChimeraX 一键构建突变体。
+    out_dir/MUT/ 下生成:
+        OsAKT_xxx.cxc
+        OsAKT_xxx.pdb (由 ChimeraX 生成)
+    """
+    out_dir_cx = normalize_path_for_chimerax(out_dir)
+    wt_cx = normalize_path_for_chimerax(wt_pdb_path)
+
+    mut_dir = os.path.join(out_dir, "MUT")
+    os.makedirs(mut_dir, exist_ok=True)
+
+    cxc_path = os.path.join(mut_dir, f"{mut_label}.cxc")
+
+    script = f"""
+    # === 自动突变：{mut_label} ===
+    open "{wt_cx}"
+
+    swapaa {new_aa} #{{1}}/{chain}:{residue} rotamer True
+
+    save "{out_dir_cx}/MUT/{mut_label}.pdb"
+
+    close all
+    """
+
+    with open(cxc_path, "w", encoding="utf-8") as f:
+        f.write(script)
+
+    return cxc_path
+
+
 def build_cxc_script(
     wt_pdb_path: str,
     mutant_list: List[Dict[str, str]],
