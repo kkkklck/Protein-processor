@@ -319,10 +319,6 @@ def create_gui():
         variable=hole_parse_var,
     ).grid(row=7, column=2, columnspan=2, sticky="w", pady=(8, 0))
 
-    hole_btn_frame = tk.Frame(hole_container)
-    hole_btn_frame.pack(fill="x", padx=10, pady=10)
-    tk.Button(hole_btn_frame, text="执行 HOLE 管道", command=on_generate, width=18).pack(side="left")
-
     # ===== 生成按钮 =====
     def on_generate():
         wt_pdb = wt_path_var.get().strip()
@@ -646,6 +642,10 @@ def create_gui():
         text="勾选突变模式后，只会生成 swapaa 的 .cxc 文件。",
         fg="#555"
     ).pack(side="left", padx=10)
+
+    hole_btn_frame = tk.Frame(hole_container)
+    hole_btn_frame.pack(fill="x", padx=10, pady=10)
+    tk.Button(hole_btn_frame, text="执行 HOLE 管道", command=on_generate, width=18).pack(side="left")
 
     # 默认展示研究模式
     update_mode()
