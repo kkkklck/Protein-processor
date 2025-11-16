@@ -150,7 +150,12 @@ def create_gui():
     add_mutant_row("DMI")
     add_mutant_row("DMT")
 
-    tk.Button(mutants_frame, text="添加突变体", command=add_mutant_row).pack(anchor="w", pady=4)
+    # 注意：按钮放在滚动区外面，这样永远在列表最下面
+    tk.Button(
+        mutants_outer,
+        text="添加突变体",
+        command=add_mutant_row
+    ).pack(anchor="w", padx=10, pady=4)
 
     # ===== 功能选择 =====
     feature_frame = tk.LabelFrame(research_container, text="要让 ChimeraX 自动干的事", padx=8, pady=8)
