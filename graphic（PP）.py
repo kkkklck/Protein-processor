@@ -380,8 +380,11 @@ def create_gui():
     ).grid(row=0, column=0, columnspan=6, sticky="w")
 
     mutation_rows = []
-    mutations_inner = tk.Frame(mut_builder_frame)
-    mutations_inner.grid(row=1, column=0, columnspan=6, sticky="w", pady=(8, 4))
+    mutations_scroll = ScrollableFrame(mut_builder_frame, height=200)
+    mutations_scroll.grid(row=1, column=0, columnspan=6, sticky="nsew", pady=(8, 4))
+    mutations_inner = mutations_scroll.scrollable_frame
+    mut_builder_frame.grid_rowconfigure(1, weight=1)
+    mut_builder_frame.grid_columnconfigure(0, weight=1)
 
     def add_mutation_row(default_label=None):
         idx = len(mutation_rows) + 1
@@ -458,10 +461,10 @@ def create_gui():
     return root
 
 class ScrollableFrame(tk.Frame):
-    def __init__(self, container, *args, **kwargs):
+    def __init__(self, container, *args, height=280, **kwargs):
         super().__init__(container, *args, **kwargs)
 
-        canvas = tk.Canvas(self, height=280)
+        canvas = tk.Canvas(self, height=height)
         scrollbar = tk.Scrollbar(self, orient="vertical", command=canvas.yview)
         self.scrollable_frame = tk.Frame(canvas)
 
