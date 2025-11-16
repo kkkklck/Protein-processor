@@ -186,7 +186,7 @@ def create_gui():
     ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(4, 0))
 
     # ===== 目标残基 & 链 =====
-    target_frame = tk.LabelFrame(research_container, text="目标残基（可选，不一定是三联体）", padx=8, pady=8)
+    target_frame = tk.LabelFrame(research_container, text="目标残基（可选）", padx=8, pady=8)
     target_frame.pack(fill="x", padx=10, pady=5)
 
     chain_var = tk.StringVar(value="A")
@@ -200,7 +200,7 @@ def create_gui():
 
     tk.Label(
         target_frame,
-        text="例：298,299,300 或 298-305，后续可以自己扩展更复杂写法。",
+        text="例：298,299,300 或 298-305。",
         fg="#555"
     ).grid(row=1, column=0, columnspan=4, sticky="w", pady=(4, 0))
 
@@ -383,12 +383,17 @@ def create_gui():
         text="一次配置多个突变，生成对应的 swapaa .cxc（输出在所选目录/MUT/ 下）。",
         fg="#555"
     ).grid(row=0, column=0, columnspan=6, sticky="w")
+    tk.Label(
+        mut_builder_frame,
+        text="提示：链 ID / 残基号 / 目标氨基酸都可以用逗号或空格分隔多个（数量要匹配）。",
+        fg="#777"
+    ).grid(row=1, column=0, columnspan=6, sticky="w", pady=(4, 0))
 
     mutation_rows = []
     mutations_scroll = ScrollableFrame(mut_builder_frame, height=200)
-    mutations_scroll.grid(row=1, column=0, columnspan=6, sticky="nsew", pady=(8, 4))
+    mutations_scroll.grid(row=2, column=0, columnspan=6, sticky="nsew", pady=(8, 4))
     mutations_inner = mutations_scroll.scrollable_frame
-    mut_builder_frame.grid_rowconfigure(1, weight=1)
+    mut_builder_frame.grid_rowconfigure(2, weight=1)
     mut_builder_frame.grid_columnconfigure(0, weight=1)
 
     def add_mutation_row(default_label=None):
@@ -404,14 +409,14 @@ def create_gui():
         tk.Label(row, text="标签：").grid(row=0, column=0, sticky="w")
         tk.Entry(row, textvariable=label_var, width=10).grid(row=0, column=1, sticky="w", padx=(0, 10))
 
-        tk.Label(row, text="链：").grid(row=0, column=2, sticky="w")
+        tk.Label(row, text="链(可多个)：").grid(row=0, column=2, sticky="w")
         tk.Entry(row, textvariable=chain_var, width=5).grid(row=0, column=3, sticky="w", padx=(0, 10))
 
-        tk.Label(row, text="残基号：").grid(row=0, column=4, sticky="w")
+        tk.Label(row, text="残基号(可多个)：").grid(row=0, column=4, sticky="w")
         tk.Entry(row, textvariable=residue_var, width=8).grid(row=0, column=5, sticky="w", padx=(0, 10))
 
-        tk.Label(row, text="改成：").grid(row=0, column=6, sticky="w")
-        tk.Entry(row, textvariable=new_aa_var, width=8).grid(row=0, column=7, sticky="w", padx=(0, 10))
+        tk.Label(row, text="改成(可多个)：").grid(row=0, column=6, sticky="w")
+        tk.Entry(row, textvariable=new_aa_var, width=12).grid(row=0, column=7, sticky="w", padx=(0, 10))
 
         def delete_row():
             if row_dict in mutation_rows:
@@ -433,13 +438,13 @@ def create_gui():
     add_mutation_row()
 
     tk.Button(mut_builder_frame, text="添加突变", command=add_mutation_row).grid(
-        row=2, column=0, columnspan=2, sticky="w", pady=(4, 0)
+        row=3, column=0, columnspan=2, sticky="w", pady=(4, 0)
     )
 
     mut_out_dir_var = tk.StringVar(value=os.path.join("D:\\", "demo"))
-    tk.Label(mut_builder_frame, text="输出目录：").grid(row=3, column=0, sticky="w", pady=(10, 0))
+    tk.Label(mut_builder_frame, text="输出目录：").grid(row=4, column=0, sticky="w", pady=(10, 0))
     tk.Entry(mut_builder_frame, textvariable=mut_out_dir_var, width=50).grid(
-        row=3, column=1, columnspan=4, sticky="w", pady=(10, 0)
+        row=4, column=1, columnspan=4, sticky="w", pady=(10, 0)
     )
 
     def browse_mut_out_dir():
@@ -448,7 +453,7 @@ def create_gui():
             mut_out_dir_var.set(path)
 
     tk.Button(mut_builder_frame, text="浏览", command=browse_mut_out_dir).grid(
-        row=3, column=5, padx=5, pady=(10, 0)
+        row=4, column=5, padx=5, pady=(10, 0)
     )
 
     mut_btn_frame = tk.Frame(mutate_container)
