@@ -171,6 +171,44 @@ def hole_parse_profile(log_path: str) -> List[Tuple[float, float]]:
     return profile
 
 
+def compute_gate_metrics(
+    profile: List[Tuple[float, float]], threshold: float = 1.4
+) -> Tuple[float, float, float, float, float]:
+    """计算 profile 的最小半径以及 gate 区间。"""
+
+    if not profile:
+        raise ValueError("profile 不能为空。")
+
+    # 先找出最小半径以及对应的位置
+    s_min, r_min = min(profile, key=lambda item: item[1])
+
+    # 为了避免日志里偶尔顺序被打乱，先按 s 排序
+    sorted_profile = sorted(profile, key=lambda item: item[0])
+
+    gate_segments: List[Tuple[float, float]] = []
+    gate_start = gate_end = None
+    for s, r in sorted_profile:
+        if r < threshold:
+            if gate_start is None:
+                gate_start = s
+            gate_end = s
+        else:
+            if gate_start is not None and gate_end is not None:
+                gate_segments.append((gate_start, gate_end))
+            gate_start = gate_end = None
+    if gate_start is not None and gate_end is not None:
+        gate_segments.append((gate_start, gate_end))
+
+    if gate_segments:
+        gate_start, gate_end = max(gate_segments, key=lambda seg: seg[1] - seg[0])
+        gate_length = gate_end - gate_start
+    else:
+        gate_start = gate_end = float("nan")
+        gate_length = float("nan")
+
+    return r_min, s_min, gate_start, gate_end, gate_length
+
+
 def hole_summarize_logs(log_paths: Dict[str, str], out_dir: str) -> None:
     """根据多个 HOLE 日志生成 CSV 汇总。"""
 
@@ -185,8 +223,18 @@ def hole_summarize_logs(log_paths: Dict[str, str], out_dir: str) -> None:
         prof = hole_parse_profile(path)
         for s, r in prof:
             profiles_rows.append({"Model": model, "s_A": s, "r_A": r})
-        s_min, r_min = min(prof, key=lambda item: item[1])
-        min_table_rows.append({"Model": model, "s_min_A": s_min, "r_min_A": r_min})
+
+        r_min, s_min, gate_start, gate_end, gate_length = compute_gate_metrics(prof)
+        min_table_rows.append(
+            {
+                "Model": model,
+                "s_min_A": s_min,
+                "r_min_A": r_min,
+                "gate_start_A": gate_start,
+                "gate_end_A": gate_end,
+                "gate_length_A": gate_length,
+            }
+        )
         min_summary_rows.append({
             "Model": model,
             "Summary": f"Minimum radius found: {r_min:8.3f} Å at s = {s_min:8.3f} Å",
@@ -196,6 +244,27 @@ def hole_summarize_logs(log_paths: Dict[str, str], out_dir: str) -> None:
     _pd.DataFrame(profiles_rows).to_csv(os.path.join(out_dir, "hole_profile_samples.csv"), index=False)
     _pd.DataFrame(min_table_rows).to_csv(os.path.join(out_dir, "hole_min_table.csv"), index=False)
     _pd.DataFrame(min_summary_rows).to_csv(os.path.join(out_dir, "hole_min_summary.csv"), index=False)
+
+
+def merge_all_metrics(hole_dir: str, sasa_dir: str, out_csv: str) -> None:
+    """把 HOLE、SASA 和氢键的统计合成一张总表。"""
+
+    if _pd is None:
+        raise RuntimeError("需要安装 pandas 才能合并 CSV。")
+
+    hole_csv = os.path.join(hole_dir, "hole_min_table.csv")
+    sasa_csv = os.path.join(sasa_dir, "sasa_hbonds_summary.csv")
+
+    if not os.path.exists(hole_csv):
+        raise FileNotFoundError(f"未找到 HOLE 结果：{hole_csv}")
+    if not os.path.exists(sasa_csv):
+        raise FileNotFoundError(f"未找到 SASA/H-bond 结果：{sasa_csv}")
+
+    df_hole = _pd.read_csv(hole_csv)
+    df_sasa = _pd.read_csv(sasa_csv)
+    df = df_hole.merge(df_sasa, on="Model", how="outer")
+    os.makedirs(os.path.dirname(out_csv) or ".", exist_ok=True)
+    df.to_csv(out_csv, index=False)
 
 
 def hole_plot_profiles(
