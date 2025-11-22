@@ -535,9 +535,17 @@ def build_cxc_script(
     # 对齐突变体到 WT
     if mutant_list:
         add("# ——把全部突变体对齐到 WT——")
-        ids_str = ",".join("#%d" % m["model_id"] for m in mutant_list)
-        add("mm %s to #%d showAlignment false" % (ids_str, wt_id))
+        if len(mutant_list) == 1:
+            # 只有一个突变体：mm #1 to #2 这种写法
+            mid = mutant_list[0]["model_id"]
+            add("mm #%d to #%d showAlignment false" % (mid, wt_id))
+        else:
+            # 突变体在前，WT 在最后，模型 ID 一定是 1..N 连续
+            max_id = wt_id - 1
+            # 对应你操作文档里的 mm #1-4 to #5
+            add("mm #1-%d to #%d showAlignment false" % (max_id, wt_id))
         add("")
+
 
     # 相机与画幅
     add("# ——画幅 / 相机 / 灯光——")
