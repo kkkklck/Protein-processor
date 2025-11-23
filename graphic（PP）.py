@@ -13,6 +13,7 @@ from PP import (
     hole_summarize_logs,
     hole_plot_profiles,
     summarize_sasa_hbonds,
+    merge_all_metrics,
 )
 
 
@@ -659,18 +660,52 @@ def create_gui():
             return
 
         messagebox.showinfo(
-            "汇总完成",
-            "已生成：\n"
-            f"{summary_csv}\n"
-            f"{detail_csv}\n\n"
-            "可以用 Excel 打开做对比分析。"
+                "汇总完成",
+                "已生成：\n"
+                f"{summary_csv}\n"
+                f"{detail_csv}\n\n"
+                "可以用 Excel 打开做对比分析。"
+        )
+
+    def on_merge_all_metrics():
+        hole_dir = hole_base_dir_var.get().strip()
+        sasa_dir = out_dir_var.get().strip()
+
+        if not hole_dir:
+            messagebox.showerror("缺少 HOLE 目录", "请先在 HOLE 模式里设置 HOLE 工作目录。")
+            return
+        if not sasa_dir:
+            messagebox.showerror("缺少 SASA 目录", "请先在研究模式里设置“图片 / 文本输出目录”。")
+            return
+
+        out_csv = os.path.join(sasa_dir, "metrics_all.csv")
+
+        try:
+            merge_all_metrics(hole_dir=hole_dir, sasa_dir=sasa_dir, out_csv=out_csv)
+        except Exception as e:
+            messagebox.showerror("合并失败", f"merge_all_metrics 出错：\n{e}")
+            return
+
+        messagebox.showinfo(
+                "合并完成",
+                "已生成 HOLE + SASA 总表：\n"
+                f"{out_csv}\n\n"
+                "里面包含：r_min / gate 长度 / HBonds / Total_SASA 等，"
+                "直接用 Excel 打开就能筛。"
         )
 
     tk.Button(
-        btn_frame,
-        text="汇总 SASA / H-bonds",
-        command=on_summarize_sasa_hbonds,
-        width=18,
+            btn_frame,
+            text="汇总 SASA / H-bonds",
+            command=on_summarize_sasa_hbonds,
+            width=18,
+    ).pack(side="left", padx=8)
+
+    tk.Button(
+            btn_frame,
+            text="合并 HOLE + SASA 指标",
+            command=on_merge_all_metrics,
+            width=22,
     ).pack(side="left", padx=8)
 
     tk.Label(
