@@ -13,6 +13,7 @@ from PP import (
     hole_summarize_logs,
     hole_plot_profiles,
     summarize_sasa_hbonds,
+    plot_basic_hole_metrics,
     merge_all_metrics,
 )
 
@@ -324,9 +325,85 @@ def create_gui():
         variable=hole_parse_var,
     ).grid(row=7, column=2, columnspan=2, sticky="w", pady=(8, 0))
 
+    def on_prepare_hole_pdb():
+        """从 WT + 突变体列表，把对应 PDB 复制到 HOLE 工作目录，命名为 <模型名>.pdb。"""
+        base_dir = hole_base_dir_var.get().strip()
+        if not base_dir:
+            messagebox.showerror("缺少 HOLE 目录", "请先在 HOLE 区设置“HOLE 工作目录”。")
+            return
+
+        models_str = hole_models_var.get().strip()
+        if not models_str:
+            messagebox.showerror("缺少模型列表", "请先在 HOLE 区设置模型列表，比如 WT,DMI,DMT,GT,ND。")
+            return
+
+        models = [m.strip() for m in models_str.split(",") if m.strip()]
+        if not models:
+            messagebox.showerror("无模型", "模型列表似乎是空的。")
+            return
+
+        mapping = {}
+
+        if "WT" in models:
+            wt_path = wt_path_var.get().strip()
+            if not wt_path:
+                messagebox.showerror("缺少 WT PDB", "模型列表包含 WT，但上面没有选择 WT PDB。")
+                return
+            if not os.path.exists(wt_path):
+                messagebox.showerror("WT PDB 不存在", f"找不到 WT PDB 文件：\n{wt_path}")
+                return
+            mapping["WT"] = wt_path
+
+        label_to_pdb = {}
+        for idx, row in enumerate(mutant_rows, start=1):
+            label = (row["label_var"].get() or "").strip()
+            pdb = (row["pdb_var"].get() or "").strip()
+            if not label or not pdb:
+                continue
+            label_to_pdb[label] = pdb
+
+        for m in models:
+            if m == "WT":
+                continue
+            pdb_path = label_to_pdb.get(m)
+            if not pdb_path:
+                messagebox.showerror(
+                    "缺少突变体 PDB",
+                    f"模型列表包含 {m}，但在“突变体 PDB”区没有找到同名标签的行，"
+                    "请确保突变体标签和模型名一模一样。"
+                )
+                return
+            if not os.path.exists(pdb_path):
+                messagebox.showerror("PDB 文件不存在", f"{m} 对应的 PDB 不存在：\n{pdb_path}")
+                return
+            mapping[m] = pdb_path
+
+        os.makedirs(base_dir, exist_ok=True)
+
+        for label, src in mapping.items():
+            dst = os.path.join(base_dir, f"{label}.pdb")
+            try:
+                shutil.copy2(src, dst)
+            except Exception as e:
+                messagebox.showerror("复制失败", f"复制 {label} 时出错：\n{e}")
+                return
+
+        messagebox.showinfo(
+            "准备完成",
+            "已把 WT + 突变体 PDB 复制到 HOLE 工作目录：\n"
+            f"{base_dir}\n\n"
+            "文件名统一为：<模型名>.pdb。"
+        )
+
+    tk.Button(
+        hole_frame,
+        text="从 WT+突变体准备 HOLE PDB",
+        command=on_prepare_hole_pdb,
+    ).grid(row=8, column=0, columnspan=4, sticky="w", pady=(8, 0))
+
     # ===== 自动推荐 cpoint / cvect 小工具 =====
     axis_frame = tk.LabelFrame(hole_frame, text="自动推荐 cpoint / cvect", padx=8, pady=8)
-    axis_frame.grid(row=8, column=0, columnspan=4, sticky="we", pady=(10, 0))
+    axis_frame.grid(row=9, column=0, columnspan=4, sticky="we", pady=(10, 0))
 
     axis_chain_var = tk.StringVar(value="A")
     axis_res_expr_var = tk.StringVar(value="")
@@ -516,9 +593,34 @@ def create_gui():
             parse_flag = bool(hole_parse_var.get())
 
             for m in models:
+                model_dir = os.path.join(base_dir, f"{m}-HOLE")
+                os.makedirs(model_dir, exist_ok=True)
+
+                src_pdb = os.path.join(base_dir, f"{m}.pdb")
+                if not os.path.exists(src_pdb):
+                    messagebox.showerror(
+                        "缺少 PDB",
+                        f"找不到 {m} 的 PDB 文件：\n{src_pdb}\n请先点击“从 WT+突变体准备 HOLE PDB”。",
+                    )
+                    return
+
+                dst_pdb = os.path.join(model_dir, f"{m}.pdb")
+                try:
+                    shutil.copy2(src_pdb, dst_pdb)
+                except Exception as e:
+                    messagebox.showerror("复制失败", f"复制 {m} 的 PDB 到子目录时出错：\n{e}")
+                    return
+
+                radius_src = os.path.join(base_dir, radius_file)
+                if os.path.isfile(radius_src):
+                    try:
+                        shutil.copy2(radius_src, os.path.join(model_dir, radius_file))
+                    except Exception:
+                        pass
+
                 try:
                     hole_write_input(
-                        base_dir_win=base_dir,
+                        base_dir_win=model_dir,
                         model=m,
                         cpoint=cpoint,
                         cvect=cvect,
@@ -533,7 +635,11 @@ def create_gui():
             if run_flag:
                 for m in models:
                     try:
-                        hole_run_in_wsl(base_dir_win=base_dir, model=m, hole_cmd=hole_cmd)
+                        hole_run_in_wsl(
+                            base_dir_win=os.path.join(base_dir, f"{m}-HOLE"),
+                            model=m,
+                            hole_cmd=hole_cmd,
+                        )
                     except Exception as e:
                         messagebox.showerror("HOLE 运行失败", f"{m} 出错：{e}")
                         return
@@ -542,7 +648,7 @@ def create_gui():
             if parse_flag:
                 logs = {}
                 for m in models:
-                    log_path = os.path.join(base_dir, f"{m}_hole.log")
+                    log_path = os.path.join(base_dir, f"{m}-HOLE", f"{m}_hole.log")
                     if os.path.exists(log_path):
                         logs[m] = log_path
                     else:
@@ -642,6 +748,23 @@ def create_gui():
             f"runscript {cxc_path}"
         )
 
+    def on_plot_hole_metrics():
+        base_dir = hole_base_dir_var.get().strip()
+        if not base_dir:
+            messagebox.showerror("缺少目录", "请选择 HOLE 工作目录。")
+            return
+
+        try:
+            paths = plot_basic_hole_metrics(base_dir)
+        except Exception as e:
+            messagebox.showerror("绘图失败", f"生成 HOLE 对比图时出错：\n{e}")
+            return
+
+        messagebox.showinfo(
+            "绘图完成",
+            "已在 HOLE 工作目录生成基础对比图：\n" + "\n".join(paths)
+        )
+
     btn_frame = tk.Frame(research_container)
     btn_frame.pack(fill="x", padx=10, pady=10)
 
@@ -658,6 +781,30 @@ def create_gui():
         except Exception as e:
             messagebox.showerror("汇总失败", f"解析 SASA/H-bonds 日志时出错：\n{e}")
             return
+
+        labels = ["WT"]
+        for idx, row in enumerate(mutant_rows, start=1):
+            label = (row["label_var"].get() or "").strip()
+            if label:
+                labels.append(label)
+        labels = sorted(set(labels))
+
+        for label in labels:
+            subdir = os.path.join(out_dir, label)
+            os.makedirs(subdir, exist_ok=True)
+            prefix = f"{label}_"
+            for name in os.listdir(out_dir):
+                if not name.startswith(prefix):
+                    continue
+                src = os.path.join(out_dir, name)
+                if not os.path.isfile(src):
+                    continue
+                new_name = name[len(prefix):] if len(name) > len(prefix) else name
+                dst = os.path.join(subdir, new_name)
+                try:
+                    shutil.move(src, dst)
+                except Exception:
+                    continue
 
         messagebox.showinfo(
                 "汇总完成",
@@ -813,6 +960,12 @@ def create_gui():
     hole_btn_frame = tk.Frame(hole_container)
     hole_btn_frame.pack(fill="x", padx=10, pady=10)
     tk.Button(hole_btn_frame, text="执行 HOLE 管道", command=on_generate, width=18).pack(side="left")
+    tk.Button(
+        hole_btn_frame,
+        text="画 HOLE 对比图",
+        command=on_plot_hole_metrics,
+        width=18,
+    ).pack(side="left", padx=8)
 
     # 默认展示研究模式
     update_mode()
