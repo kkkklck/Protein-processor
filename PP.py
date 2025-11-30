@@ -297,6 +297,60 @@ def hole_plot_profiles(
     _plt.close()
     return out_path
 
+
+def plot_basic_hole_metrics(hole_dir: str, out_dir: str | None = None):
+    """
+    读取 hole_min_table.csv，画基础对比图：
+      - r_min_A 的柱状图
+      - gate_length_A 的柱状图（如果存在）
+    返回生成的图片路径列表。
+    """
+
+    if _pd is None or _plt is None:
+        raise RuntimeError("需要安装 pandas 和 matplotlib 才能绘图。")
+
+    hole_dir = (hole_dir or "").strip()
+    if not hole_dir:
+        raise ValueError("hole_dir 不能为空")
+
+    csv_path = os.path.join(hole_dir, "hole_min_table.csv")
+    if not os.path.exists(csv_path):
+        raise FileNotFoundError(f"未找到 HOLE 汇总表：{csv_path}")
+
+    df = _pd.read_csv(csv_path)
+    if "Model" not in df.columns or "r_min_A" not in df.columns:
+        raise ValueError("hole_min_table.csv 缺少 Model 或 r_min_A 列。")
+
+    if out_dir is None:
+        out_dir = hole_dir
+    os.makedirs(out_dir, exist_ok=True)
+
+    models = df["Model"].astype(str).tolist()
+    out_paths: List[str] = []
+
+    _plt.figure(figsize=(6, 4))
+    _plt.bar(models, df["r_min_A"].tolist())
+    _plt.xlabel("Model")
+    _plt.ylabel("最小孔径 r_min (Å)")
+    _plt.tight_layout()
+    out1 = os.path.join(out_dir, "hole_r_min_bar.png")
+    _plt.savefig(out1, dpi=300)
+    _plt.close()
+    out_paths.append(out1)
+
+    if "gate_length_A" in df.columns:
+        _plt.figure(figsize=(6, 4))
+        _plt.bar(models, df["gate_length_A"].tolist())
+        _plt.xlabel("Model")
+        _plt.ylabel("gate 长度 (Å)")
+        _plt.tight_layout()
+        out2 = os.path.join(out_dir, "hole_gate_length_bar.png")
+        _plt.savefig(out2, dpi=300)
+        _plt.close()
+        out_paths.append(out2)
+
+    return out_paths
+
 def normalize_path_for_chimerax(path: str) -> str:
     """
     把 Windows 路径变成 ChimeraX 好用的样子：
@@ -713,19 +767,30 @@ def summarize_sasa_hbonds(out_dir: str) -> Tuple[str, str]:
     if not out_dir:
         raise ValueError("out_dir 不能为空")
 
-    sasa_files = sorted(glob.glob(os.path.join(out_dir, "*_sasa.html")))
+    sasa_files = sorted(
+        glob.glob(os.path.join(out_dir, "**", "*_sasa.html"), recursive=True)
+    )
     if not sasa_files:
-        raise ValueError(f"在 {out_dir} 没找到任何 *_sasa.html 文件。")
+        raise ValueError(f"在 {out_dir}（含子目录）没找到任何 *_sasa.html 文件。")
+
+    hbonds_files = sorted(
+        glob.glob(os.path.join(out_dir, "**", "*_hbonds.txt"), recursive=True)
+    )
+    if not hbonds_files:
+        raise ValueError(f"在 {out_dir}（含子目录）没找到任何 *_hbonds.txt 文件。")
 
     summary_rows: List[Dict[str, float]] = []
     detail_rows: List[Dict[str, str]] = []
     all_resids = set()
+    hbonds_map = {
+        os.path.basename(path).replace("_hbonds.txt", ""): path for path in hbonds_files
+    }
 
     for sasa_path in sasa_files:
         label = os.path.basename(sasa_path).replace("_sasa.html", "")
         sasa_dict = parse_sasa_html(sasa_path)
-        hb_path = os.path.join(out_dir, f"{label}_hbonds.txt")
-        hbonds = parse_hbonds_txt(hb_path) if os.path.exists(hb_path) else 0
+        hb_path = hbonds_map.get(label)
+        hbonds = parse_hbonds_txt(hb_path) if hb_path and os.path.exists(hb_path) else 0
         total_sasa = sum(sasa_dict.values())
 
         row: Dict[str, float] = {
