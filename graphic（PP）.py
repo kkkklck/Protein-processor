@@ -15,6 +15,7 @@ from PP import (
     summarize_sasa_hbonds,
     plot_basic_hole_metrics,
     merge_all_metrics,
+    score_metrics_file,
 )
 
 
@@ -825,20 +826,30 @@ def create_gui():
             messagebox.showerror("缺少 SASA 目录", "请先在研究模式里设置“图片 / 文本输出目录”。")
             return
 
-        out_csv = os.path.join(sasa_dir, "metrics_all.csv")
+        metrics_all = os.path.join(sasa_dir, "metrics_all.csv")
 
         try:
-            merge_all_metrics(hole_dir=hole_dir, sasa_dir=sasa_dir, out_csv=out_csv)
+            merge_all_metrics(hole_dir=hole_dir, sasa_dir=sasa_dir, out_csv=metrics_all)
         except Exception as e:
             messagebox.showerror("合并失败", f"merge_all_metrics 出错：\n{e}")
             return
 
+        try:
+            scored_path = score_metrics_file(metrics_all, wt_name="WT", pdb_dir=hole_dir)
+        except Exception as e:
+            messagebox.showerror("评分失败", f"score_metrics 出错：\n{e}")
+            return
+
         messagebox.showinfo(
-                "合并完成",
+                "合并 + 评分完成",
                 "已生成 HOLE + SASA 总表：\n"
-                f"{out_csv}\n\n"
-                "里面包含：r_min / gate 长度 / HBonds / Total_SASA 等，"
-                "直接用 Excel 打开就能筛。"
+                f"{metrics_all}\n\n"
+                "并已写出结构评分 + 置信度表：\n"
+                f"{scored_path}\n\n"
+                "metrics_scored.csv 里包含：\n"
+                "- r_min / gate_length / HBonds / SASA_residue\n"
+                "- GateTightScore / TotalScore / ScoreClass\n"
+                "- pLDDT 均值 / 中位数 / 低-中-高残基数 + ConfidenceClass"
         )
 
     tk.Button(
