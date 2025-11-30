@@ -1,4 +1,7 @@
 from typing import List, Dict, Tuple
+from collections import defaultdict
+import statistics
+from pathlib import Path
 import os, re, glob
 import shutil
 import subprocess
@@ -9,6 +12,11 @@ try:
 except Exception:  # pragma: no cover - optional deps
     _pd = None
     _plt = None
+
+try:
+    from Bio.PDB import PDBParser as _PDBParser
+except Exception:  # pragma: no cover - optional dep
+    _PDBParser = None
 
 # 一字母 → 三字母氨基酸代码映射，只包含标准 20 个
 ONE_TO_THREE = {
@@ -266,11 +274,196 @@ def merge_all_metrics(hole_dir: str, sasa_dir: str, out_csv: str) -> None:
     os.makedirs(os.path.dirname(out_csv) or ".", exist_ok=True)
     df.to_csv(out_csv, index=False)
 
+def _score_class(total_score: float) -> str:
+    if total_score >= 1.0:
+        return "better_than_WT"
+    if total_score >= 0.0:
+        return "similar_to_WT"
+    return "worse_than_WT"
+
+def score_metrics_file(csv_path: str, wt_name: str = "WT", pdb_dir: str | None = None) -> str:
+    """
+    读 metrics_all.csv，按 WT 计算 GateTightScore / TotalScore / ScoreClass，
+    若提供 pdb_dir 且安装了 Biopython，则顺带拼上 pLDDT 置信度。
+    返回最终写出的 metrics_scored.csv 路径。
+    """
+
+    if _pd is None:
+        raise RuntimeError("需要 pandas 才能打分。")
+
+    csv_path = os.path.abspath(csv_path)
+    if not os.path.isfile(csv_path):
+        raise FileNotFoundError(f"找不到 metrics_all.csv：{csv_path}")
+
+    df = _pd.read_csv(csv_path)
+
+    required_cols = ["Model", "r_min_A", "gate_length_A", "HBonds", "SASA_residue"]
+    missing = [c for c in required_cols if c not in df.columns]
+    if missing:
+        raise ValueError(f"metrics_all.csv 缺少这些列：{missing}")
+
+    if wt_name not in df["Model"].values:
+        raise ValueError(f"在 Model 列里找不到 WT='{wt_name}'，请确认命名。")
+
+    wt = df[df["Model"] == wt_name].iloc[0]
+    r0 = wt["r_min_A"]
+    L0 = wt["gate_length_A"]
+    s0 = wt["SASA_residue"]
+    h0 = wt["HBonds"] if wt["HBonds"] != 0 else 1.0
+
+    def _safe_div(base: float, value: float) -> float:
+        return (base - value) / base if base not in (0, None) else 0.0
+
+    df["d_rmin_vs_WT"] = df["r_min_A"] - r0
+    df["d_gateL_vs_WT"] = df["gate_length_A"] - L0
+    df["d_SASAres_vs_WT"] = df["SASA_residue"] - s0
+    df["d_HBonds_vs_WT"] = df["HBonds"] - h0
+
+    df["GateTightScore"] = df.apply(
+        lambda row: _safe_div(r0, row["r_min_A"]) + _safe_div(L0, row["gate_length_A"]), axis=1
+    )
+    df["HydroScore"] = df.apply(
+        lambda row: _safe_div(s0, row["SASA_residue"]) + (row["HBonds"] - h0) / h0,
+        axis=1,
+    )
+    df["TotalScore"] = df["GateTightScore"] + df["HydroScore"]
+    df["ScoreClass"] = df["TotalScore"].apply(_score_class)
+
+    if pdb_dir and _PDBParser is not None:
+        conf_df = plddt_summary_for_models(pdb_dir, df["Model"].astype(str).tolist())
+        df = df.merge(conf_df, on="Model", how="left")
+
+    out_path = os.path.join(os.path.dirname(csv_path), "metrics_scored.csv")
+    df.to_csv(out_path, index=False, encoding="utf-8-sig")
+    return out_path
+
+def _extract_plddt_from_pdb(pdb_path: Path):
+    """返回该 pdb 的逐残基 pLDDT 列表：[{chain, resi, resn, plddt}, ...]"""
+
+    if _PDBParser is None:
+        raise RuntimeError("需要 Biopython 才能解析 pLDDT（pip install biopython）")
+
+    parser = _PDBParser(QUIET=True)
+    structure = parser.get_structure(pdb_path.stem, str(pdb_path))
+
+    rows = []
+    for model in structure:
+        for chain in model:
+            per_res = defaultdict(list)
+            for res in chain:
+                if res.id[0] != " ":  # 跳过水/异配体
+                    continue
+                for atom in res.get_atoms():
+                    b = atom.get_bfactor()
+                    if b is not None:
+                        key = (chain.id, res.id)
+                        per_res[key].append(float(b))
+
+            for res in chain:
+                if res.id[0] != " ":
+                    continue
+                key = (chain.id, res.id)
+                if key in per_res:
+                    vals = per_res[key]
+                    rows.append(
+                        {
+                            "chain": chain.id,
+                            "resi": res.id[1],
+                            "resn": res.get_resname(),
+                            "plddt": round(statistics.mean(vals), 2),
+                        }
+                    )
+    return rows
+
+def _summarize_plddt_rows(rows):
+    """把逐残基列表压成一个 summary dict。"""
+
+    if not rows:
+        return {}
+    vals = [r["plddt"] for r in rows]
+    return {
+        "plddt_mean": round(statistics.mean(vals), 2),
+        "plddt_median": round(statistics.median(vals), 2),
+        "plddt_lt50": sum(v < 50 for v in vals),
+        "plddt_50_70": sum(50 <= v < 70 for v in vals),
+        "plddt_ge70": sum(v >= 70 for v in vals),
+    }
+
+def plddt_summary_for_models(pdb_dir: str, models: list[str]) -> "_pd.DataFrame":
+    """
+    假设每个模型的 PDB 在 pdb_dir 下叫 <Model>.pdb，
+    返回一个 DataFrame：Model + pLDDT 汇总列。
+    """
+
+    if _pd is None:
+        raise RuntimeError("需要 pandas 才能生成 pLDDT 汇总表。")
+    if _PDBParser is None:
+        raise RuntimeError("需要 Biopython 才能解析 pLDDT。")
+
+    pdb_dir = Path(pdb_dir)
+    rows = []
+    for m in models:
+        pdb_path = pdb_dir / f"{m}.pdb"
+        if not pdb_path.is_file():
+            continue
+        detail_rows = _extract_plddt_from_pdb(pdb_path)
+        summary = _summarize_plddt_rows(detail_rows)
+        if not summary:
+            continue
+        mean = summary["plddt_mean"]
+        if mean >= 90:
+            conf_class = "very_high_conf"
+        elif mean >= 70:
+            conf_class = "confident"
+        elif mean >= 50:
+            conf_class = "low_conf"
+        else:
+            conf_class = "very_low_conf"
+
+        rows.append(
+            {
+                "Model": m,
+                **summary,
+                "ConfidenceClass": conf_class,
+            }
+        )
+
+    if not rows:
+        return _pd.DataFrame(
+            columns=[
+                "Model",
+                "plddt_mean",
+                "plddt_median",
+                "plddt_lt50",
+                "plddt_50_70",
+                "plddt_ge70",
+                "ConfidenceClass",
+            ]
+        )
+
+    return _pd.DataFrame(rows)
+
+def short_model_label(model: str) -> str:
+    """
+    尽量把模型名缩短：
+      - 取第一个 '_' 前的部分：E174A_single → E174A
+      - OsAKT2_WT → WT（你要的话可以单独再特判）
+    """
+
+    m = str(model)
+    if "_" in m:
+        head = m.split("_", 1)[0]
+        if head.lower().startswith("osakt"):
+            parts = m.split("_")
+            if len(parts) >= 2:
+                return parts[1]
+        return head
+    return m
 
 def hole_plot_profiles(
-    log_paths: Dict[str, str],
-    out_dir: str,
-    out_name: str = "hole_profiles.png",
+        log_paths: Dict[str, str],
+        out_dir: str,
+        out_name: str = "hole_profiles.png",
 ) -> str:
     """把多条 profile 曲线绘制成图像。"""
 
@@ -280,21 +473,39 @@ def hole_plot_profiles(
     profiles = {model: hole_parse_profile(path) for model, path in log_paths.items()}
 
     os.makedirs(out_dir, exist_ok=True)
-    _plt.figure(figsize=(6, 4))
+    fig, ax = _plt.subplots(figsize=(6.5, 4))
     for model, prof in profiles.items():
         s_vals = [s for s, _ in prof]
         r_vals = [r for _, r in prof]
-        _plt.plot(s_vals, r_vals, label=model)
+        label = short_model_label(model)
+        ax.plot(s_vals, r_vals, label=label, linewidth=1.2)
 
-    _plt.axhline(0.0, linestyle="--", linewidth=0.8)
-    _plt.xlabel("s (Å)")
-    _plt.ylabel("Hole radius (Å)")
-    _plt.legend()
-    _plt.tight_layout()
+    ax.axhline(0.0, linestyle="--", linewidth=0.8)
+    ax.set_xlabel("s (Å)")
+    ax.set_ylabel("Hole radius (Å)")
+
+    n_models = len(profiles)
+    ncol = 1
+    if n_models >= 8:
+        ncol = 2
+    if n_models >= 12:
+        ncol = 3
+
+    ax.legend(
+        title="Model",
+        loc="center left",
+        bbox_to_anchor=(1.02, 0.5),
+        borderaxespad=0.5,
+        fontsize=8,
+        title_fontsize=9,
+        ncol=ncol,
+    )
+
+    fig.tight_layout(rect=[0.0, 0.0, 0.8, 1.0])
 
     out_path = os.path.join(out_dir, out_name)
-    _plt.savefig(out_path, dpi=300)
-    _plt.close()
+    fig.savefig(out_path, dpi=300)
+    _plt.close(fig)
     return out_path
 
 
@@ -326,10 +537,15 @@ def plot_basic_hole_metrics(hole_dir: str, out_dir: str | None = None):
     os.makedirs(out_dir, exist_ok=True)
 
     models = df["Model"].astype(str).tolist()
+    short_labels = [short_model_label(m) for m in models]
+    n = len(models)
+    width = max(6, min(12, 0.6 * n + 2))
+    x = range(n)
     out_paths: List[str] = []
 
-    _plt.figure(figsize=(6, 4))
-    _plt.bar(models, df["r_min_A"].tolist())
+    _plt.figure(figsize=(width, 4))
+    _plt.bar(x, df["r_min_A"].tolist())
+    _plt.xticks(x, short_labels, rotation=45, ha="right")
     _plt.xlabel("Model")
     _plt.ylabel("最小孔径 r_min (Å)")
     _plt.tight_layout()
@@ -339,8 +555,9 @@ def plot_basic_hole_metrics(hole_dir: str, out_dir: str | None = None):
     out_paths.append(out1)
 
     if "gate_length_A" in df.columns:
-        _plt.figure(figsize=(6, 4))
-        _plt.bar(models, df["gate_length_A"].tolist())
+        _plt.figure(figsize=(width, 4))
+        _plt.bar(x, df["gate_length_A"].tolist())
+        _plt.xticks(x, short_labels, rotation=45, ha="right")
         _plt.xlabel("Model")
         _plt.ylabel("gate 长度 (Å)")
         _plt.tight_layout()
