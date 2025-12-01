@@ -1,1047 +1,1088 @@
-from typing import List, Dict, Tuple
-from collections import defaultdict
-import statistics
-from pathlib import Path
-import os, re, glob
+import os
 import shutil
-import subprocess
+import tkinter as tk
+from tkinter import filedialog, messagebox
 
-try:
-    import pandas as _pd
-    import matplotlib.pyplot as _plt
-except Exception:  # pragma: no cover - optional deps
-    _pd = None
-    _plt = None
-
-try:
-    from Bio.PDB import PDBParser as _PDBParser
-except Exception:  # pragma: no cover - optional dep
-    _PDBParser = None
-
-# 一字母 → 三字母氨基酸代码映射，只包含标准 20 个
-ONE_TO_THREE = {
-    "A": "ALA",
-    "R": "ARG",
-    "N": "ASN",
-    "D": "ASP",
-    "C": "CYS",
-    "Q": "GLN",
-    "E": "GLU",
-    "G": "GLY",
-    "H": "HIS",
-    "I": "ILE",
-    "L": "LEU",
-    "K": "LYS",
-    "M": "MET",
-    "F": "PHE",
-    "P": "PRO",
-    "S": "SER",
-    "T": "THR",
-    "W": "TRP",
-    "Y": "TYR",
-    "V": "VAL",
-}
-
-# ===== HOLE / WSL 默认配置（你只需要在自己电脑上改一次） =====
-# 1. 在 WSL 里执行 `conda info --base` 得到 conda 的 base 路径，比如：
-#    /home/k/miniforge3
-# 2. 把 HOLE_WSL_CONDA_INIT 改成  <base>/etc/profile.d/conda.sh
-# 3. 把 HOLE_WSL_CONDA_ENV 改成你安装 hole 的那个环境名（例如 "hole_env"）
-
-HOLE_WSL_CONDA_INIT = "$HOME/miniforge3/etc/profile.d/conda.sh"  # ← 根据实际路径改
-HOLE_WSL_CONDA_ENV = "hole_env"  # ← 根据实际 env 名改
-HOLE_WSL_EXE = "hole"  # env 里 HOLE 的命令名
+from PP import (
+    build_axis_cxc,
+    build_cxc_script,
+    build_mutation_cxc,
+    parse_axis_log,
+    hole_write_input,
+    hole_run_in_wsl,
+    hole_summarize_logs,
+    hole_plot_profiles,
+    summarize_sasa_hbonds,
+    plot_basic_hole_metrics,
+    merge_all_metrics,
+    score_metrics_file,
+    run_osakt2_msa,
+)
 
 
-# ===========================
-# HOLE 管道相关工具函数
-# ===========================
+def create_gui():
+    root = tk.Tk()
+    root.title("ChimeraX .cxc 自动生成器（GUI 版）")
 
+    # 整体窗口稍微宽一点
+    root.geometry("900x600")
 
-def hole_win_to_wsl(path: str) -> str:
-    """把 Windows 风格路径转换为 WSL 路径。"""
-    if path is None:
-        raise ValueError("path 不可为空。")
-    cleaned = path.strip().strip('"').strip("'")
-    if not cleaned:
-        raise ValueError("path 为空，无法转换。")
-    if cleaned.startswith("/"):
-        return cleaned
-    if len(cleaned) >= 2 and cleaned[1] == ":":
-        drive = cleaned[0].lower()
-        tail = cleaned[2:].lstrip("\\/")
-        tail = tail.replace("\\", "/")
-        return f"/mnt/{drive}/{tail}"
-    raise ValueError(f"无法识别的 Windows 路径：{path}")
+    # ===== 外层可滚动区域（大滚动条） =====
+    canvas = tk.Canvas(root, highlightthickness=0)
+    vbar = tk.Scrollbar(root, orient="vertical", command=canvas.yview)
+    canvas.configure(yscrollcommand=vbar.set)
 
+    vbar.pack(side="right", fill="y")
+    canvas.pack(side="left", fill="both", expand=True)
 
-def hole_write_input(
-    base_dir_win: str,
-    model: str,
-    cpoint: Tuple[float, float, float],
-    cvect: Tuple[float, float, float],
-    sample: float = 0.25,
-    endrad: float = 15.0,
-    radius_filename: str = "simple.rad",
-) -> str:
-    """根据配置生成 HOLE 所需的 .inp 文件。"""
+    # 真正放控件的地方，全都往这个 content 里塞
+    content = tk.Frame(canvas)
+    content_window = canvas.create_window((0, 0), window=content, anchor="nw")
 
-    base_dir_win = (base_dir_win or "").rstrip("\\/")
-    if not base_dir_win:
-        raise ValueError("base_dir_win 不能为空")
-    base_dir_wsl = hole_win_to_wsl(base_dir_win)
+    # 内容大小变化时，更新滚动区域
+    def _on_content_config(event):
+        canvas.configure(scrollregion=canvas.bbox("all"))
 
-    coord_wsl = f"{base_dir_wsl}/{model}.pdb"
-    radius_wsl = f"{base_dir_wsl}/{radius_filename}"
-    sphpdb_wsl = f"{base_dir_wsl}/{model}_hole_spheres.pdb"
-    mappdb_wsl = f"{base_dir_wsl}/{model}_hole_profile.pdb"
+    content.bind("<Configure>", _on_content_config)
 
-    cpx, cpy, cpz = cpoint
-    cvx, cvy, cvz = cvect
+    # 画布大小变化时，让 content 宽度跟着变，避免只占左侧一小条
+    def _on_canvas_config(event):
+        canvas.itemconfig(content_window, width=event.width)
 
-    lines = [
-        f"coord  {coord_wsl}",
-        f"radius {radius_wsl}",
-        f"cpoint {cpx:.2f} {cpy:.2f} {cpz:.2f}",
-        f"cvect  {cvx:.2f} {cvy:.2f} {cvz:.2f}",
-        f"sample {sample:.2f}",
-        f"endrad {endrad:.2f}",
-        "ignore HOH",
-        f"sphpdb {sphpdb_wsl}",
-        f"mappdb {mappdb_wsl}",
-        "",
-    ]
+    canvas.bind("<Configure>", _on_canvas_config)
 
-    out_path = base_dir_win + f"\\{model}_hole.inp"
-    with open(out_path, "w", encoding="ascii", errors="ignore") as f:
-        f.write("\n".join(lines))
-    return out_path
+    # 绑定鼠标滚轮（Windows）
+    def _on_mousewheel(event):
+        canvas.yview_scroll(int(-event.delta / 120), "units")
 
+    canvas.bind_all("<MouseWheel>", _on_mousewheel)
 
-def hole_run_in_wsl(base_dir_win: str, model: str, hole_cmd: str = "") -> None:
-    """
-    在 WSL 环境中运行 HOLE。
+    # ===== WT 区 =====
+    wt_frame = tk.LabelFrame(content, text="WT PDB", padx=8, pady=8)
+    wt_frame.pack(fill="x", padx=10, pady=5)
 
-    参数 hole_cmd：
-      - 为空字符串 / "hole" / "auto"：走自动模式：
-            . HOLE_WSL_CONDA_INIT
-            conda activate HOLE_WSL_CONDA_ENV
-            HOLE_WSL_EXE < inp > log
-      - 其他非空：认为是高级用户手动指定的命令，原样执行。
-    """
+    wt_path_var = tk.StringVar()
 
-    base_dir_win = (base_dir_win or "").rstrip("\\/")
-    if not base_dir_win:
-        raise ValueError("base_dir_win 不能为空")
-    base_dir_wsl = hole_win_to_wsl(base_dir_win)
+    tk.Label(wt_frame, text="WT PDB 路径：").grid(row=0, column=0, sticky="w")
+    wt_entry = tk.Entry(wt_frame, textvariable=wt_path_var, width=70)
+    wt_entry.grid(row=0, column=1, sticky="w")
 
-    inp_name = f"{model}_hole.inp"
-    log_name = f"{model}_hole.log"
-
-    # 决定在 WSL 里真正要执行的 HOLE 命令
-    cmd_raw = (hole_cmd or "").strip()
-    if not cmd_raw or cmd_raw.lower() in {"hole", "auto"}:
-        # —— 自动模式：使用上面配置的 conda 环境 ——
-        # 注意：假设 HOLE_WSL_CONDA_INIT / HOLE_WSL_CONDA_ENV / HOLE_WSL_EXE
-        # 已经被你改成正确值。
-        cmd_in_shell = (
-            f'. {HOLE_WSL_CONDA_INIT} && '
-            f'conda activate {HOLE_WSL_CONDA_ENV} && '
-            f'{HOLE_WSL_EXE}'
+    def browse_wt():
+        path = filedialog.askopenfilename(
+            title="选择 WT PDB 文件",
+            filetypes=[("PDB files", "*.pdb"), ("All files", "*.*")]
         )
-    else:
-        # —— 高级模式：直接使用用户输入的一整串命令 ——
-        cmd_in_shell = cmd_raw
+        if path:
+            wt_path_var.set(path)
 
-    inner_cmd = f'cd "{base_dir_wsl}" && {cmd_in_shell} < {inp_name} > {log_name}'
-    full_cmd = ["wsl", "bash", "-lc", inner_cmd]
-    subprocess.run(full_cmd, check=True)
+    tk.Button(wt_frame, text="浏览", command=browse_wt).grid(row=0, column=2, padx=5)
 
+    # ===== 模式切换 =====
+    research_container = tk.Frame(content)
+    mutate_container = tk.Frame(content)
+    hole_container = tk.Frame(content)
 
-def hole_parse_profile(log_path: str) -> List[Tuple[float, float]]:
-    """从 HOLE 日志中提取 profile 数据。"""
+    mode_var = tk.StringVar(value="research")  # "research" / "mutate" / "hole"
 
-    profile: List[Tuple[float, float]] = []
-    with open(log_path, "r", encoding="utf-8", errors="ignore") as f:
-        for line in f:
-            if "mid-point" in line or "(sampled)" in line:
-                parts = line.split()
-                if len(parts) < 2:
-                    continue
-                try:
-                    s = float(parts[0])
-                    r = float(parts[1])
-                except ValueError:
-                    continue
-                profile.append((s, r))
-    if not profile:
-        raise ValueError(f"日志中没有 profile 信息：{log_path}")
-    return profile
-
-
-def compute_gate_metrics(
-    profile: List[Tuple[float, float]], threshold: float = 1.4
-) -> Tuple[float, float, float, float, float]:
-    """计算 profile 的最小半径以及 gate 区间。"""
-
-    if not profile:
-        raise ValueError("profile 不能为空。")
-
-    # 先找出最小半径以及对应的位置
-    s_min, r_min = min(profile, key=lambda item: item[1])
-
-    # 为了避免日志里偶尔顺序被打乱，先按 s 排序
-    sorted_profile = sorted(profile, key=lambda item: item[0])
-
-    gate_segments: List[Tuple[float, float]] = []
-    gate_start = gate_end = None
-    for s, r in sorted_profile:
-        if r < threshold:
-            if gate_start is None:
-                gate_start = s
-            gate_end = s
+    def update_mode():
+        mode = mode_var.get()
+        for frame in (research_container, mutate_container, hole_container):
+            frame.pack_forget()
+        if mode == "research":
+            research_container.pack(fill="both", expand=True)
+        elif mode == "mutate":
+            mutate_container.pack(fill="both", expand=True)
         else:
-            if gate_start is not None and gate_end is not None:
-                gate_segments.append((gate_start, gate_end))
-            gate_start = gate_end = None
-    if gate_start is not None and gate_end is not None:
-        gate_segments.append((gate_start, gate_end))
-
-    if gate_segments:
-        gate_start, gate_end = max(gate_segments, key=lambda seg: seg[1] - seg[0])
-        gate_length = gate_end - gate_start
-    else:
-        gate_start = gate_end = float("nan")
-        gate_length = float("nan")
-
-    return r_min, s_min, gate_start, gate_end, gate_length
-
-
-def hole_summarize_logs(log_paths: Dict[str, str], out_dir: str) -> None:
-    """根据多个 HOLE 日志生成 CSV 汇总。"""
-
-    if _pd is None:
-        raise RuntimeError("需要安装 pandas 才能生成 CSV 汇总。")
-
-    profiles_rows: List[Dict[str, float]] = []
-    min_table_rows: List[Dict[str, float]] = []
-    min_summary_rows: List[Dict[str, str]] = []
-
-    for model, path in log_paths.items():
-        prof = hole_parse_profile(path)
-        for s, r in prof:
-            profiles_rows.append({"Model": model, "s_A": s, "r_A": r})
-
-        r_min, s_min, gate_start, gate_end, gate_length = compute_gate_metrics(prof)
-        min_table_rows.append(
-            {
-                "Model": model,
-                "s_min_A": s_min,
-                "r_min_A": r_min,
-                "gate_start_A": gate_start,
-                "gate_end_A": gate_end,
-                "gate_length_A": gate_length,
-            }
-        )
-        min_summary_rows.append({
-            "Model": model,
-            "Summary": f"Minimum radius found: {r_min:8.3f} Å at s = {s_min:8.3f} Å",
-        })
-
-    os.makedirs(out_dir, exist_ok=True)
-    _pd.DataFrame(profiles_rows).to_csv(os.path.join(out_dir, "hole_profile_samples.csv"), index=False)
-    _pd.DataFrame(min_table_rows).to_csv(os.path.join(out_dir, "hole_min_table.csv"), index=False)
-    _pd.DataFrame(min_summary_rows).to_csv(os.path.join(out_dir, "hole_min_summary.csv"), index=False)
-
-
-def merge_all_metrics(hole_dir: str, sasa_dir: str, out_csv: str) -> None:
-    """把 HOLE、SASA 和氢键的统计合成一张总表。"""
-
-    if _pd is None:
-        raise RuntimeError("需要安装 pandas 才能合并 CSV。")
-
-    hole_csv = os.path.join(hole_dir, "hole_min_table.csv")
-    sasa_csv = os.path.join(sasa_dir, "sasa_hbonds_summary.csv")
-
-    if not os.path.exists(hole_csv):
-        raise FileNotFoundError(f"未找到 HOLE 结果：{hole_csv}")
-    if not os.path.exists(sasa_csv):
-        raise FileNotFoundError(f"未找到 SASA/H-bond 结果：{sasa_csv}")
-
-    df_hole = _pd.read_csv(hole_csv)
-    df_sasa = _pd.read_csv(sasa_csv)
-    df = df_hole.merge(df_sasa, on="Model", how="outer")
-    os.makedirs(os.path.dirname(out_csv) or ".", exist_ok=True)
-    df.to_csv(out_csv, index=False)
-
-def _score_class(total_score: float) -> str:
-    if total_score >= 1.0:
-        return "better_than_WT"
-    if total_score >= 0.0:
-        return "similar_to_WT"
-    return "worse_than_WT"
-
-def score_metrics_file(csv_path: str, wt_name: str = "WT", pdb_dir: str | None = None) -> str:
-    """
-    读 metrics_all.csv，按 WT 计算 GateTightScore / TotalScore / ScoreClass，
-    若提供 pdb_dir 且安装了 Biopython，则顺带拼上 pLDDT 置信度。
-    返回最终写出的 metrics_scored.csv 路径。
-    """
-
-    if _pd is None:
-        raise RuntimeError("需要 pandas 才能打分。")
-
-    csv_path = os.path.abspath(csv_path)
-    if not os.path.isfile(csv_path):
-        raise FileNotFoundError(f"找不到 metrics_all.csv：{csv_path}")
-
-    df = _pd.read_csv(csv_path)
-
-    required_cols = ["Model", "r_min_A", "gate_length_A", "HBonds", "SASA_residue"]
-    missing = [c for c in required_cols if c not in df.columns]
-    if missing:
-        raise ValueError(f"metrics_all.csv 缺少这些列：{missing}")
-
-    if wt_name not in df["Model"].values:
-        raise ValueError(f"在 Model 列里找不到 WT='{wt_name}'，请确认命名。")
-
-    wt = df[df["Model"] == wt_name].iloc[0]
-    r0 = wt["r_min_A"]
-    L0 = wt["gate_length_A"]
-    s0 = wt["SASA_residue"]
-    h0 = wt["HBonds"] if wt["HBonds"] != 0 else 1.0
-
-    def _safe_div(base: float, value: float) -> float:
-        return (base - value) / base if base not in (0, None) else 0.0
-
-    df["d_rmin_vs_WT"] = df["r_min_A"] - r0
-    df["d_gateL_vs_WT"] = df["gate_length_A"] - L0
-    df["d_SASAres_vs_WT"] = df["SASA_residue"] - s0
-    df["d_HBonds_vs_WT"] = df["HBonds"] - h0
-
-    df["GateTightScore"] = df.apply(
-        lambda row: _safe_div(r0, row["r_min_A"]) + _safe_div(L0, row["gate_length_A"]), axis=1
-    )
-    df["HydroScore"] = df.apply(
-        lambda row: _safe_div(s0, row["SASA_residue"]) + (row["HBonds"] - h0) / h0,
-        axis=1,
-    )
-    df["TotalScore"] = df["GateTightScore"] + df["HydroScore"]
-    df["ScoreClass"] = df["TotalScore"].apply(_score_class)
-
-    if pdb_dir and _PDBParser is not None:
-        conf_df = plddt_summary_for_models(pdb_dir, df["Model"].astype(str).tolist())
-        df = df.merge(conf_df, on="Model", how="left")
-
-    out_path = os.path.join(os.path.dirname(csv_path), "metrics_scored.csv")
-    df.to_csv(out_path, index=False, encoding="utf-8-sig")
-    return out_path
-
-def _extract_plddt_from_pdb(pdb_path: Path):
-    """返回该 pdb 的逐残基 pLDDT 列表：[{chain, resi, resn, plddt}, ...]"""
-
-    if _PDBParser is None:
-        raise RuntimeError("需要 Biopython 才能解析 pLDDT（pip install biopython）")
-
-    parser = _PDBParser(QUIET=True)
-    structure = parser.get_structure(pdb_path.stem, str(pdb_path))
-
-    rows = []
-    for model in structure:
-        for chain in model:
-            per_res = defaultdict(list)
-            for res in chain:
-                if res.id[0] != " ":  # 跳过水/异配体
-                    continue
-                for atom in res.get_atoms():
-                    b = atom.get_bfactor()
-                    if b is not None:
-                        key = (chain.id, res.id)
-                        per_res[key].append(float(b))
-
-            for res in chain:
-                if res.id[0] != " ":
-                    continue
-                key = (chain.id, res.id)
-                if key in per_res:
-                    vals = per_res[key]
-                    rows.append(
-                        {
-                            "chain": chain.id,
-                            "resi": res.id[1],
-                            "resn": res.get_resname(),
-                            "plddt": round(statistics.mean(vals), 2),
-                        }
-                    )
-    return rows
-
-def _summarize_plddt_rows(rows):
-    """把逐残基列表压成一个 summary dict。"""
-
-    if not rows:
-        return {}
-    vals = [r["plddt"] for r in rows]
-    return {
-        "plddt_mean": round(statistics.mean(vals), 2),
-        "plddt_median": round(statistics.median(vals), 2),
-        "plddt_lt50": sum(v < 50 for v in vals),
-        "plddt_50_70": sum(50 <= v < 70 for v in vals),
-        "plddt_ge70": sum(v >= 70 for v in vals),
-    }
-
-def plddt_summary_for_models(pdb_dir: str, models: list[str]) -> "_pd.DataFrame":
-    """
-    假设每个模型的 PDB 在 pdb_dir 下叫 <Model>.pdb，
-    返回一个 DataFrame：Model + pLDDT 汇总列。
-    """
-
-    if _pd is None:
-        raise RuntimeError("需要 pandas 才能生成 pLDDT 汇总表。")
-    if _PDBParser is None:
-        raise RuntimeError("需要 Biopython 才能解析 pLDDT。")
-
-    pdb_dir = Path(pdb_dir)
-    rows = []
-    for m in models:
-        pdb_path = pdb_dir / f"{m}.pdb"
-        if not pdb_path.is_file():
-            continue
-        detail_rows = _extract_plddt_from_pdb(pdb_path)
-        summary = _summarize_plddt_rows(detail_rows)
-        if not summary:
-            continue
-        mean = summary["plddt_mean"]
-        if mean >= 90:
-            conf_class = "very_high_conf"
-        elif mean >= 70:
-            conf_class = "confident"
-        elif mean >= 50:
-            conf_class = "low_conf"
-        else:
-            conf_class = "very_low_conf"
-
-        rows.append(
-            {
-                "Model": m,
-                **summary,
-                "ConfidenceClass": conf_class,
-            }
-        )
-
-    if not rows:
-        return _pd.DataFrame(
-            columns=[
-                "Model",
-                "plddt_mean",
-                "plddt_median",
-                "plddt_lt50",
-                "plddt_50_70",
-                "plddt_ge70",
-                "ConfidenceClass",
-            ]
-        )
-
-    return _pd.DataFrame(rows)
-
-def short_model_label(model: str) -> str:
-    """
-    尽量把模型名缩短：
-      - 取第一个 '_' 前的部分：E174A_single → E174A
-      - OsAKT2_WT → WT（你要的话可以单独再特判）
-    """
-
-    m = str(model)
-    if "_" in m:
-        head = m.split("_", 1)[0]
-        if head.lower().startswith("osakt"):
-            parts = m.split("_")
-            if len(parts) >= 2:
-                return parts[1]
-        return head
-    return m
-
-def hole_plot_profiles(
-        log_paths: Dict[str, str],
-        out_dir: str,
-        out_name: str = "hole_profiles.png",
-) -> str:
-    """把多条 profile 曲线绘制成图像。"""
-
-    if _plt is None:
-        raise RuntimeError("需要安装 matplotlib 才能绘图。")
-
-    profiles = {model: hole_parse_profile(path) for model, path in log_paths.items()}
-
-    os.makedirs(out_dir, exist_ok=True)
-    fig, ax = _plt.subplots(figsize=(6.5, 4))
-    for model, prof in profiles.items():
-        s_vals = [s for s, _ in prof]
-        r_vals = [r for _, r in prof]
-        label = short_model_label(model)
-        ax.plot(s_vals, r_vals, label=label, linewidth=1.2)
-
-    ax.axhline(0.0, linestyle="--", linewidth=0.8)
-    ax.set_xlabel("s (Å)")
-    ax.set_ylabel("Hole radius (Å)")
-
-    n_models = len(profiles)
-    ncol = 1
-    if n_models >= 8:
-        ncol = 2
-    if n_models >= 12:
-        ncol = 3
-
-    ax.legend(
-        title="Model",
-        loc="center left",
-        bbox_to_anchor=(1.02, 0.5),
-        borderaxespad=0.5,
-        fontsize=8,
-        title_fontsize=9,
-        ncol=ncol,
-    )
-
-    fig.tight_layout(rect=[0.0, 0.0, 0.8, 1.0])
-
-    out_path = os.path.join(out_dir, out_name)
-    fig.savefig(out_path, dpi=300)
-    _plt.close(fig)
-    return out_path
-
-
-def plot_basic_hole_metrics(hole_dir: str, out_dir: str | None = None):
-    """
-    读取 hole_min_table.csv，画基础对比图：
-      - r_min_A 的柱状图
-      - gate_length_A 的柱状图（如果存在）
-    返回生成的图片路径列表。
-    """
-
-    if _pd is None or _plt is None:
-        raise RuntimeError("需要安装 pandas 和 matplotlib 才能绘图。")
-
-    hole_dir = (hole_dir or "").strip()
-    if not hole_dir:
-        raise ValueError("hole_dir 不能为空")
-
-    csv_path = os.path.join(hole_dir, "hole_min_table.csv")
-    if not os.path.exists(csv_path):
-        raise FileNotFoundError(f"未找到 HOLE 汇总表：{csv_path}")
-
-    df = _pd.read_csv(csv_path)
-    if "Model" not in df.columns or "r_min_A" not in df.columns:
-        raise ValueError("hole_min_table.csv 缺少 Model 或 r_min_A 列。")
-
-    if out_dir is None:
-        out_dir = hole_dir
-    os.makedirs(out_dir, exist_ok=True)
-
-    models = df["Model"].astype(str).tolist()
-    short_labels = [short_model_label(m) for m in models]
-    n = len(models)
-    width = max(6, min(12, 0.6 * n + 2))
-    x = range(n)
-    out_paths: List[str] = []
-
-    _plt.figure(figsize=(width, 4))
-    _plt.bar(x, df["r_min_A"].tolist())
-    _plt.xticks(x, short_labels, rotation=45, ha="right")
-    _plt.xlabel("Model")
-    _plt.ylabel("最小孔径 r_min (Å)")
-    _plt.tight_layout()
-    out1 = os.path.join(out_dir, "hole_r_min_bar.png")
-    _plt.savefig(out1, dpi=300)
-    _plt.close()
-    out_paths.append(out1)
-
-    if "gate_length_A" in df.columns:
-        _plt.figure(figsize=(width, 4))
-        _plt.bar(x, df["gate_length_A"].tolist())
-        _plt.xticks(x, short_labels, rotation=45, ha="right")
-        _plt.xlabel("Model")
-        _plt.ylabel("gate 长度 (Å)")
-        _plt.tight_layout()
-        out2 = os.path.join(out_dir, "hole_gate_length_bar.png")
-        _plt.savefig(out2, dpi=300)
-        _plt.close()
-        out_paths.append(out2)
-
-    return out_paths
-
-def normalize_path_for_chimerax(path: str) -> str:
-    """
-    把 Windows 路径变成 ChimeraX 好用的样子：
-    去掉首尾引号和空格，反斜杠换成 /
-    """
-    p = path.strip().strip('"').strip("'")
-    return p.replace("\\", "/")
-
-
-def build_axis_cxc(
-    wt_pdb_path: str,
-    chain_id: str,
-    residue_expr: str,
-    out_dir: str,
-    label: str = "axis",
-) -> str:
-    """根据 WT + 残基表达式生成“找轴”脚本。"""
-
-    wt_pdb_path = (wt_pdb_path or "").strip()
-    residue_expr = (residue_expr or "").strip()
-    out_dir = (out_dir or "").strip()
-    if not wt_pdb_path:
-        raise ValueError("wt_pdb_path 不能为空")
-    if not residue_expr:
-        raise ValueError("residue_expr 不能为空")
-    if not out_dir:
-        raise ValueError("out_dir 不能为空")
-
-    wt_cx = normalize_path_for_chimerax(wt_pdb_path)
-    out_dir_cx = normalize_path_for_chimerax(out_dir)
-
-    safe_label = (label or "axis").strip() or "axis"
-    log_name = f"axis_{safe_label}.log"
-    log_path_cx = f"{out_dir_cx}/{log_name}"
-
-    lines = [
-        f"# === 自动找轴工具: {safe_label} ===",
-        "close all",
-        f"open \"{wt_cx}\"",
-        f"select #1/{chain_id or 'A'}:{residue_expr}",
-        "view sel",
-        "clip near 8; clip far 60",
-        "log clear",
-        "measure center sel mark true radius 0.6 color yellow",
-        f"log save \"{log_path_cx}\" executableLinks false",
-        "getcrd sel",
-        "# 运行完后，到输出目录里找 axis_*.log 并交给 Python 解析。",
-    ]
-
-    os.makedirs(out_dir, exist_ok=True)
-    axis_cxc_path = os.path.join(out_dir, f"{safe_label}_axis.cxc")
-    with open(axis_cxc_path, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines) + "\n")
-
-    return axis_cxc_path
-
-
-def parse_axis_log(log_path: str) -> Tuple[float, float, float]:
-    """从 axis log 中解析出质心坐标。"""
-
-    if not os.path.exists(log_path):
-        raise FileNotFoundError(f"找不到 log 文件：{log_path}")
-
-    pattern = re.compile(r"Center of mass[^=]*=\s*\(([^)]+)\)")
-    with open(log_path, encoding="utf-8", errors="ignore") as f:
-        for line in f:
-            if "Center of mass" not in line:
-                continue
-            match = pattern.search(line)
-            if not match:
-                continue
-            coord_str = match.group(1)
-            parts = [p.strip() for p in coord_str.split(",")]
-            if len(parts) != 3:
-                continue
-            try:
-                x, y, z = map(float, parts)
-            except ValueError:
-                continue
-            return x, y, z
-
-    raise ValueError(f"在 log 里没找到质心坐标: {log_path}")
-
-
-def _split_multi_value(value: str) -> List[str]:
-    """把用户输入里用逗号、空格或分号分隔的值拆成列表。"""
-    if not value:
-        return []
-    # 允许中文逗号（有些输入法会产生）
-    value = value.replace("，", ",")
-    parts = re.split(r"[;,\s]+", value)
-    return [p for p in (part.strip() for part in parts) if p]
-
-
-def build_mutation_cxc(
-        wt_pdb_path: str,
-        mut_label: str,
-        chain: str,
-        residue: str,
-        new_aa: str,
-        out_dir: str,
-) -> str:
-    """
-    自动生成突变体的 cxc，用 ChimeraX 一键构建突变体。
-    out_dir/MUT/ 下生成:
-        OsAKT_xxx.cxc
-        OsAKT_xxx.pdb (由 ChimeraX 生成)
-    """
-    # 规范一下路径和参数
-    out_dir_cx = normalize_path_for_chimerax(out_dir)
-    wt_cx = normalize_path_for_chimerax(wt_pdb_path)
-
-    mut_dir = os.path.join(out_dir, "MUT")
-    os.makedirs(mut_dir, exist_ok=True)
-    mut_dir_cx = normalize_path_for_chimerax(mut_dir)
-
-    residues = _split_multi_value(str(residue).strip())
-    aas_raw = [item.upper() for item in _split_multi_value(new_aa)]
-    chains = _split_multi_value(chain) or ["A"]
-
-    if not residues:
-        raise ValueError("至少需要提供一个残基号。")
-    if not aas_raw:
-        raise ValueError("至少需要提供一个目标氨基酸。")
-
-    if len(chains) == 1:
-        chains *= len(residues)
-    elif len(chains) != len(residues):
-        raise ValueError("链 ID 数量需要和残基号数量一致（或只填一个链 ID）。")
-
-    if len(aas_raw) == 1:
-        aas_raw *= len(residues)
-    elif len(aas_raw) != len(residues):
-        raise ValueError("目标氨基酸数量需要和残基号数量一致（或只填一个氨基酸）。")
-
-    mutation_steps = []
-    for ch, res, aa_raw in zip(chains, residues, aas_raw):
-        aa_raw = aa_raw.strip()
-        if len(aa_raw) == 1:
-            if aa_raw not in ONE_TO_THREE:
-                raise ValueError(f"不认识的氨基酸一字母代码：{aa_raw}")
-            aa = ONE_TO_THREE[aa_raw]
-        elif len(aa_raw) == 3:
-            aa = aa_raw
-        else:
-            raise ValueError(
-                f"氨基酸名请用一字母或三字母，比如 N / ASN（现在是：{aa_raw}）"
+            hole_container.pack(fill="both", expand=True)
+
+    mode_frame = tk.Frame(wt_frame)
+    mode_frame.grid(row=0, column=3, padx=10, sticky="w")
+    tk.Label(mode_frame, text="模式：").pack(side="left")
+    tk.Radiobutton(
+        mode_frame,
+        text="研究",
+        value="research",
+        variable=mode_var,
+        command=update_mode
+    ).pack(side="left")
+    tk.Radiobutton(
+        mode_frame,
+        text="突变",
+        value="mutate",
+        variable=mode_var,
+        command=update_mode
+    ).pack(side="left", padx=(4, 0))
+    tk.Radiobutton(
+        mode_frame,
+        text="HOLE",
+        value="hole",
+        variable=mode_var,
+        command=update_mode
+    ).pack(side="left", padx=(4, 0))
+
+    # ===== 研究模式：突变体区 =====
+    mutants_outer = tk.LabelFrame(research_container, text="突变体 PDB（可选，多条）", padx=8, pady=8)
+    mutants_outer.pack(fill="both", padx=10, pady=5, expand=True)
+
+    scroll = ScrollableFrame(mutants_outer)
+    scroll.pack(fill="both", expand=True)
+
+    mutants_frame = scroll.scrollable_frame
+
+    mutant_rows = []
+
+    def add_mutant_row(default_label=None):
+        idx = len(mutant_rows) + 1
+        row_frame = tk.Frame(mutants_frame)
+        row_frame.pack(fill="x", pady=2)
+
+        label_var = tk.StringVar(value=default_label or f"MUT{idx}")
+        pdb_var = tk.StringVar()
+
+        tk.Label(row_frame, text=f"{idx}. 标签：").grid(row=0, column=0, sticky="w")
+        tk.Entry(row_frame, textvariable=label_var, width=10).grid(row=0, column=1, sticky="w", padx=(0, 10))
+
+        tk.Label(row_frame, text="PDB：").grid(row=0, column=2, sticky="w")
+        tk.Entry(row_frame, textvariable=pdb_var, width=50).grid(row=0, column=3, sticky="w")
+
+        def browse_mutant():
+            path = filedialog.askopenfilename(
+                title="选择突变体 PDB 文件",
+                filetypes=[("PDB files", "*.pdb"), ("All files", "*.*")]
             )
-        mutation_steps.append({
-            "chain": ch or "A",
-            "residue": res,
-            "aa": aa,
-        })
+            if path:
+                pdb_var.set(path)
 
-    cxc_path = os.path.join(mut_dir, f"{mut_label}.cxc")
+        tk.Button(row_frame, text="浏览", command=browse_mutant).grid(row=0, column=4, padx=5)
 
-    mut_lines = ["# ChimeraX swapaa 语法：swapaa <残基选择> <目标氨基酸>"]
-    for idx, step in enumerate(mutation_steps, start=1):
-        desc = f"{step['chain']}:{step['residue']} -> {step['aa']}"
-        mut_lines.append(f"# Step {idx}: {desc}")
-        mut_lines.append(
-            "swapaa #1/{chain}:{residue} {aa}".format(
-                chain=step["chain"],
-                residue=step["residue"],
-                aa=step["aa"],
-            )
-        )
-
-    script = f"""# === 自动突变：{mut_label} ===
-    close all
-
-    open "{wt_cx}"
-
-    {os.linesep.join(mut_lines)}
-
-    save "{mut_dir_cx}/{mut_label}.pdb"
-
-    close all
-    """
-
-    with open(cxc_path, "w", encoding="utf-8") as f:
-        f.write(script)
-
-    return cxc_path
-
-
-def build_cxc_script(
-    wt_pdb_path: str,
-    mutant_list: List[Dict[str, str]],
-    chain_id: str,
-    residue_expr: str,
-    out_dir: str,
-    features: Dict[str, bool],
-) -> str:
-    """
-    根据配置拼出 ChimeraX .cxc 脚本文本。
-    residue_expr: 目标残基表达式，例如 "298,299,300" 或 "298-305"
-    features: {
-        "full_coulombic": bool,
-        "contacts": bool,
-        "hbonds": bool,
-        "sasa": bool,
-    }
-    """
-    out_dir_cx = normalize_path_for_chimerax(out_dir)
-    wt_pdb_cx = normalize_path_for_chimerax(wt_pdb_path)
-
-    # 清理残基表达式（去空格）
-    residue_expr = (residue_expr or "").replace(" ", "")
-    chain_id = (chain_id or "A").strip()
-
-    lines: List[str] = []
-    add = lines.append
-
-    # Header
-    add("# === Auto-generated ChimeraX script ===")
-    add("# 由 Python 工具生成，自动完成 open / 对齐 / 出图 等步骤。")
-    add("")
-    add("# WT PDB: %s" % wt_pdb_cx)
-    if mutant_list:
-        labels = ", ".join(m.get("label", "?") for m in mutant_list)
-        add("# Mutants: %s" % labels)
-    add("")
-
-    # 打开所有模型（突变体在前，WT 在最后）
-    add("# ——打开所有 PDB——")
-    for i, m in enumerate(mutant_list, start=1):
-        pdb_cx = normalize_path_for_chimerax(m["pdb"])
-        m["model_id"] = i
-        add('open "%s"' % pdb_cx)
-    wt_id = len(mutant_list) + 1
-    add('open "%s"' % wt_pdb_cx)
-    last_id = wt_id
-    add("")
-
-    # 对齐突变体到 WT
-    if mutant_list:
-        add("# ——把全部突变体对齐到 WT——")
-        if len(mutant_list) == 1:
-            # 只有一个突变体：mm #1 to #2 这种写法
-            mid = mutant_list[0]["model_id"]
-            add("mm #%d to #%d showAlignment false" % (mid, wt_id))
-        else:
-            # 突变体在前，WT 在最后，模型 ID 一定是 1..N 连续
-            max_id = wt_id - 1
-            # 对应你操作文档里的 mm #1-4 to #5
-            add("mm #1-%d to #%d showAlignment false" % (max_id, wt_id))
-        add("")
-
-
-    # 相机与画幅
-    add("# ——画幅 / 相机 / 灯光——")
-    add("windowsize 2200 1400")
-    add("camera ortho")
-    add("lighting soft")
-    add("")
-
-    # FULL 静电势
-    if features.get("full_coulombic"):
-        add("# ===================== FULL 视角 + 静电势 =====================")
-        # WT
-        add("# ——WT FULL——")
-        add("hide #1-%d" % last_id)
-        add("show #%d" % wt_id)
-        add("surface #%d" % wt_id)
-        add("coulombic #%d range -10,10" % wt_id)
-        add('save "%s/WT_coulombic.png" width 2200 supersample 3' % out_dir_cx)
-        add("")
-        # 每个突变体
-        for m in mutant_list:
-            label = m.get("label", "MUT")
-            mid = m["model_id"]
-            add("# ——%s FULL——" % label)
-            add("hide #1-%d" % last_id)
-            add("show #%d" % mid)
-            add("surface #%d" % mid)
-            add("coulombic #%d range -10,10" % mid)
-            add('save "%s/%s_coulombic.png" width 2200 supersample 3' % (out_dir_cx, label))
-            add("")
-
-    # 是否需要近景视角（局部分析）
-    need_local_view = any(
-        features.get(flag)
-        for flag in ("contacts", "hbonds", "sasa")
-    )
-    if need_local_view and residue_expr:
-        add("# ===================== 目标残基近景视角 =====================")
-        add("# 以 WT 为基准，把视角对准指定残基附近")
-        add("hide #1-%d" % last_id)
-        add("show #%d" % wt_id)
-        add("select #%d/%s:%s" % (wt_id, chain_id, residue_expr))
-        add("view sel")
-        add("clip near 8; clip far 60")
-        add("view name TARGET")
-        add("delete pseudobonds")
-        add("")
-
-    # 接触图
-    if features.get("contacts") and residue_expr:
-        add("# ===================== 接触图（≤4 Å） =====================")
-        all_models = mutant_list + [{"label": "WT", "model_id": wt_id}]
-        for m in all_models:
-            label = m.get("label", "MUT")
-            mid = m["model_id"]
-            add("# ——%s——" % label)
-            add("hide #1-%d" % last_id)
-            add("show #%d" % mid)
-            add("view TARGET")
-            add("delete pseudobonds")
-            add("select #%d/%s:%s" % (mid, chain_id, residue_expr))
-            add("contacts sel distanceOnly 4 reveal true intermodel false")
-            add("size #%d pseudobondradius 0.35" % mid)
-            add("color yellow pseudobonds")
-            add('save "%s/%s_contacts.png" width 2200 supersample 3' % (out_dir_cx, label))
-            add("delete pseudobonds")
-            add("")
-
-    # 氢键图
-    if features.get("hbonds") and residue_expr:
-        add("# ===================== 氢键 + 文本日志 =====================")
-        all_models = mutant_list + [{"label": "WT", "model_id": wt_id}]
-        for m in all_models:
-            label = m.get("label", "MUT")
-            mid = m["model_id"]
-            add("# ——%s——" % label)
-            add("hide #1-%d" % last_id)
-            add("show #%d" % mid)
-            add("view TARGET")
-            add("delete pseudobonds")
-            add("select #%d/%s:%s" % (mid, chain_id, residue_expr))
-            add("hbonds sel reveal true interModel false showDist true")
-            add("size #%d pseudobondradius 0.35" % mid)
-            add("color yellow pseudobonds")
-            add('save "%s/%s_hbonds.png" width 2200 supersample 3' % (out_dir_cx, label))
-            add(
-                'hbonds #%d/%s:%s interModel false intraModel true '
-                'log true saveFile "%s/%s_hbonds.txt"'
-                % (mid, chain_id, residue_expr, out_dir_cx, label)
-            )
-            add("delete pseudobonds")
-            add("")
-
-    # SASA
-    if features.get("sasa") and residue_expr:
-        add("# ===================== SASA（溶剂可及面积） =====================")
-        all_models = mutant_list + [{"label": "WT", "model_id": wt_id}]
-        for m in all_models:
-            label = m.get("label", "MUT")
-            mid = m["model_id"]
-            add("# ——%s——" % label)
-            add("log clear")
-            add("measure sasa #%d/%s:%s" % (mid, chain_id, residue_expr))
-            add("info residues #%d/%s:%s attribute area" % (mid, chain_id, residue_expr))
-            add('log save "%s/%s_sasa.html" executableLinks false' % (out_dir_cx, label))
-            add("")
-
-    add("# === 脚本结束 ===")
-    return "\n".join(lines) + "\n"
-
-def parse_sasa_html(path: str) -> Dict[str, float]:
-    """解析 ChimeraX 输出的 *_sasa.html，得到残基 SASA。"""
-
-    if not os.path.exists(path):
-        raise FileNotFoundError(f"找不到 SASA 文件：{path}")
-
-    with open(path, encoding="utf-8", errors="ignore") as f:
-        text = f.read()
-
-    text_no_html = re.sub(r"<[^>]+>", " ", text)
-    pattern = re.compile(r"[#/]*([\w:]+).*?area\s+([0-9.]+)", re.IGNORECASE)
-    sasa: Dict[str, float] = {}
-
-    for raw_line in text_no_html.splitlines():
-        line = raw_line.strip()
-        if not line or "area" not in line.lower():
-            continue
-        match = pattern.search(line)
-        if not match:
-            continue
-        resid = match.group(1)
-        try:
-            area = float(match.group(2))
-        except ValueError:
-            continue
-        sasa[resid] = area
-
-    if not sasa:
-        raise ValueError(f"在 {path} 中没有解析到 SASA 数据。")
-
-    return sasa
-
-def parse_hbonds_txt(path: str) -> int:
-    """统计氢键日志（txt）中的氢键数量。"""
-
-    if not os.path.exists(path):
-        raise FileNotFoundError(f"找不到氢键日志：{path}")
-
-    count = 0
-    with open(path, encoding="utf-8", errors="ignore") as f:
-        for line in f:
-            striped = line.strip()
-            if not striped or striped.startswith("#"):
-                continue
-            count += 1
-    return count
-
-def summarize_sasa_hbonds(out_dir: str) -> Tuple[str, str]:
-    """扫描 *_sasa.html / *_hbonds.txt，输出汇总 CSV。"""
-
-    if _pd is None:
-        raise RuntimeError("需要安装 pandas 才能汇总 SASA/H-bonds。")
-
-    out_dir = (out_dir or "").strip()
-    if not out_dir:
-        raise ValueError("out_dir 不能为空")
-
-    sasa_files = sorted(
-        glob.glob(os.path.join(out_dir, "**", "*_sasa.html"), recursive=True)
-    )
-    if not sasa_files:
-        raise ValueError(f"在 {out_dir}（含子目录）没找到任何 *_sasa.html 文件。")
-
-    hbonds_files = sorted(
-        glob.glob(os.path.join(out_dir, "**", "*_hbonds.txt"), recursive=True)
-    )
-    if not hbonds_files:
-        raise ValueError(f"在 {out_dir}（含子目录）没找到任何 *_hbonds.txt 文件。")
-
-    summary_rows: List[Dict[str, float]] = []
-    detail_rows: List[Dict[str, str]] = []
-    all_resids = set()
-    hbonds_map = {
-        os.path.basename(path).replace("_hbonds.txt", ""): path for path in hbonds_files
-    }
-
-    for sasa_path in sasa_files:
-        label = os.path.basename(sasa_path).replace("_sasa.html", "")
-        sasa_dict = parse_sasa_html(sasa_path)
-        hb_path = hbonds_map.get(label)
-        hbonds = parse_hbonds_txt(hb_path) if hb_path and os.path.exists(hb_path) else 0
-        total_sasa = sum(sasa_dict.values())
-
-        row: Dict[str, float] = {
-            "Model": label,
-            "HBonds": hbonds,
-            "Total_SASA": total_sasa,
+        row_dict = {
+            "label_var": label_var,
+            "pdb_var": pdb_var,
+            "frame": row_frame,
         }
 
-        for resid, area in sasa_dict.items():
-            col = f"SASA_{resid}"
-            row[col] = area
-            all_resids.add(resid)
-            detail_rows.append({
-                "Model": label,
-                "Residue": resid,
-                "SASA": area,
-            })
+        def delete_row():
+            if row_dict in mutant_rows:
+                mutant_rows.remove(row_dict)
+            row_frame.destroy()
 
-        summary_rows.append(row)
+        del_btn = tk.Button(row_frame, text="删除", fg="red", command=delete_row)
+        del_btn.grid(row=0, column=5, padx=5)
+        row_dict["del_btn"] = del_btn
 
-    df_summary = _pd.DataFrame(summary_rows)
-    resid_cols = [f"SASA_{resid}" for resid in sorted(all_resids)]
-    for col in resid_cols:
-        if col not in df_summary.columns:
-            df_summary[col] = _pd.NA
-    ordered_cols = ["Model", "HBonds", "Total_SASA"] + resid_cols
-    df_summary = df_summary[ordered_cols].sort_values("Model")
+        mutant_rows.append(row_dict)
+    # 默认先给两行（方便你现在 DMI / DMT）
+    add_mutant_row("DMI")
+    add_mutant_row("DMT")
 
-    df_detail = _pd.DataFrame(detail_rows).sort_values(["Residue", "Model"])
+    # 注意：按钮放在滚动区外面，这样永远在列表最下面
+    tk.Button(
+        mutants_outer,
+        text="添加突变体",
+        command=add_mutant_row
+    ).pack(anchor="w", padx=10, pady=4)
 
-    summary_csv = os.path.join(out_dir, "sasa_hbonds_summary.csv")
-    detail_csv = os.path.join(out_dir, "sasa_per_residue.csv")
+    # ===== 功能选择 =====
+    feature_frame = tk.LabelFrame(research_container, text="ChimeraX 自动化", padx=8, pady=8)
+    feature_frame.pack(fill="x", padx=10, pady=5)
 
-    df_summary.to_csv(summary_csv, index=False)
-    df_detail.to_csv(detail_csv, index=False)
+    full_var = tk.IntVar(value=1)
+    contacts_var = tk.IntVar(value=1)
+    hbonds_var = tk.IntVar(value=1)
+    sasa_var = tk.IntVar(value=1)
 
-    return summary_csv, detail_csv
+    tk.Checkbutton(
+        feature_frame, text="1. FULL 静电势图", variable=full_var
+    ).grid(row=0, column=0, sticky="w")
+    tk.Checkbutton(
+        feature_frame, text="2. 近景接触图（≤4 Å）", variable=contacts_var
+    ).grid(row=0, column=1, sticky="w")
+    tk.Checkbutton(
+        feature_frame, text="3. 近景氢键图 + 文本日志", variable=hbonds_var
+    ).grid(row=1, column=0, sticky="w")
+    tk.Checkbutton(
+        feature_frame, text="4. 目标残基 SASA", variable=sasa_var
+    ).grid(row=1, column=1, sticky="w")
+
+    tk.Label(
+        feature_frame,
+        text="说明：2 / 3 / 4 需要你指定“目标残基”，只勾 1 的话可以不填残基。",
+        fg="#555"
+    ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(4, 0))
+
+    # ===== 目标残基 & 链 =====
+    target_frame = tk.LabelFrame(research_container, text="目标残基（可选）", padx=8, pady=8)
+    target_frame.pack(fill="x", padx=10, pady=5)
+
+    chain_var = tk.StringVar(value="A")
+    residue_expr_var = tk.StringVar()
+
+    tk.Label(target_frame, text="链 ID：").grid(row=0, column=0, sticky="w")
+    tk.Entry(target_frame, textvariable=chain_var, width=5).grid(row=0, column=1, sticky="w")
+
+    tk.Label(target_frame, text="残基表达式：").grid(row=0, column=2, sticky="w", padx=(15, 0))
+    tk.Entry(target_frame, textvariable=residue_expr_var, width=40).grid(row=0, column=3, sticky="w")
+
+    tk.Label(
+        target_frame,
+        text="例：298,299,300 或 298-305。",
+        fg="#555"
+    ).grid(row=1, column=0, columnspan=4, sticky="w", pady=(4, 0))
+
+    # ===== 输出设置 =====
+    out_frame = tk.LabelFrame(research_container, text="输出位置", padx=8, pady=8)
+    out_frame.pack(fill="x", padx=10, pady=5)
+
+    out_dir_var = tk.StringVar(value=os.path.join("D:\\", "demo"))
+    cxc_path_var = tk.StringVar(value=os.path.join("D:\\", "demo", "auto_chimerax.cxc"))
+
+    tk.Label(out_frame, text="图片 / 文本输出目录：").grid(row=0, column=0, sticky="w")
+    tk.Entry(out_frame, textvariable=out_dir_var, width=60).grid(row=0, column=1, sticky="w")
+
+    def browse_out_dir():
+        path = filedialog.askdirectory(title="选择输出目录")
+        if path:
+            out_dir_var.set(path)
+
+    tk.Button(out_frame, text="浏览", command=browse_out_dir).grid(row=0, column=2, padx=5)
+
+    tk.Label(out_frame, text=".cxc 脚本保存为：").grid(row=1, column=0, sticky="w", pady=(6, 0))
+    tk.Entry(out_frame, textvariable=cxc_path_var, width=60).grid(row=1, column=1, sticky="w", pady=(6, 0))
+
+    def browse_cxc_file():
+        path = filedialog.asksaveasfilename(
+            title="保存 .cxc 文件",
+            defaultextension=".cxc",
+            filetypes=[("ChimeraX script", "*.cxc"), ("All files", "*.*")]
+        )
+        if path:
+            cxc_path_var.set(path)
+
+    tk.Button(out_frame, text="浏览", command=browse_cxc_file).grid(row=1, column=2, padx=5, pady=(6, 0))
+
+    # ===== MSA 自动候选 =====
+    msa_frame = tk.LabelFrame(
+        research_container,
+        text="MSA 自动候选小工具（Clustal-Omega + OsAKT2）",
+        padx=8,
+        pady=8,
+    )
+    msa_frame.pack(fill="x", padx=10, pady=5)
+
+    msa_fasta_var = tk.StringVar()
+    msa_clustal_cmd_var = tk.StringVar(value="clustalo")
+
+    tk.Label(msa_frame, text="多序列 FASTA：").grid(row=0, column=0, sticky="w")
+    tk.Entry(msa_frame, textvariable=msa_fasta_var, width=60).grid(
+        row=0, column=1, sticky="w"
+    )
+
+    def browse_msa_fasta():
+        path = filedialog.askopenfilename(
+            title="选择多序列 FASTA",
+            filetypes=[
+                ("FASTA", "*.fasta *.fa *.faa *.fna *.fas"),
+                ("All files", "*.*"),
+            ],
+        )
+        if path:
+            msa_fasta_var.set(path)
+
+    tk.Button(msa_frame, text="浏览", command=browse_msa_fasta).grid(
+        row=0, column=2, padx=5
+    )
+
+    tk.Label(msa_frame, text="Clustal 命令：").grid(
+        row=1, column=0, sticky="w", pady=(6, 0)
+    )
+    tk.Entry(msa_frame, textvariable=msa_clustal_cmd_var, width=20).grid(
+        row=1, column=1, sticky="w", pady=(6, 0)
+    )
+
+    def on_run_msa():
+        fasta = msa_fasta_var.get().strip()
+        if not fasta:
+            messagebox.showerror("缺少 FASTA", "请先选择多序列 FASTA 文件。")
+            return
+
+        cmd = msa_clustal_cmd_var.get().strip() or "clustalo"
+
+        try:
+            aln_path, view_csv, cand_csv = run_osakt2_msa(
+                fasta_path=fasta,
+                clustalo_cmd=cmd,
+            )
+        except Exception as e:
+            messagebox.showerror(
+                "MSA 失败",
+                f"运行 Clustal-Omega 或解析对齐时出错：\n{e}",
+            )
+            return
+
+        messagebox.showinfo(
+            "MSA 完成",
+            "已生成：\n"
+            f"{aln_path}\n"
+            f"{view_csv}\n"
+            f"{cand_csv}\n\n"
+            "接下来可以用 Excel 打开 candidate_sites_auto_v0.1.csv，"
+            "挑 3–5 个点搬到 candidate_sites_v0.1.xlsx。",
+        )
+
+    tk.Button(
+        msa_frame,
+        text="跑 MSA + 自动候选",
+        command=on_run_msa,
+        width=20,
+    ).grid(row=1, column=2, padx=5, pady=(6, 0))
+
+    # ===== HOLE 管道配置 =====
+    hole_frame = tk.LabelFrame(hole_container, text="HOLE 管道配置", padx=8, pady=8)
+    hole_frame.pack(fill="x", padx=10, pady=5)
+    hole_frame.grid_columnconfigure(1, weight=1)
+    hole_frame.grid_columnconfigure(3, weight=1)
+
+    hole_base_dir_var = tk.StringVar(value=r"D:\demo\hole")
+    tk.Label(hole_frame, text="HOLE 工作目录：").grid(row=0, column=0, sticky="w")
+    tk.Entry(hole_frame, textvariable=hole_base_dir_var, width=60).grid(row=0, column=1, columnspan=2, sticky="we")
+
+    def browse_hole_dir():
+        path = filedialog.askdirectory(title="选择 HOLE 工作目录")
+        if path:
+            hole_base_dir_var.set(path)
+
+    tk.Button(hole_frame, text="浏览", command=browse_hole_dir).grid(row=0, column=3, padx=5)
+
+    hole_models_var = tk.StringVar(value="WT,DMI,DMT,GT,ND")
+    tk.Label(hole_frame, text="模型列表（逗号分隔）：").grid(row=1, column=0, sticky="w", pady=(6, 0))
+    tk.Entry(hole_frame, textvariable=hole_models_var, width=60).grid(row=1, column=1, columnspan=3, sticky="we", pady=(6, 0))
+
+    hole_cpx_var = tk.StringVar(value="38.30")
+    hole_cpy_var = tk.StringVar(value="7.55")
+    hole_cpz_var = tk.StringVar(value="-22.15")
+    hole_cvx_var = tk.StringVar(value="0.0")
+    hole_cvy_var = tk.StringVar(value="0.0")
+    hole_cvz_var = tk.StringVar(value="1.0")
+
+    tk.Label(hole_frame, text="cpoint (Å)：").grid(row=2, column=0, sticky="w", pady=(6, 0))
+    tk.Entry(hole_frame, textvariable=hole_cpx_var, width=8).grid(row=2, column=1, sticky="w", pady=(6, 0))
+    tk.Entry(hole_frame, textvariable=hole_cpy_var, width=8).grid(row=2, column=2, sticky="w", pady=(6, 0))
+    tk.Entry(hole_frame, textvariable=hole_cpz_var, width=8).grid(row=2, column=3, sticky="w", pady=(6, 0))
+
+    tk.Label(hole_frame, text="cvect：").grid(row=3, column=0, sticky="w", pady=(6, 0))
+    tk.Entry(hole_frame, textvariable=hole_cvx_var, width=8).grid(row=3, column=1, sticky="w", pady=(6, 0))
+    tk.Entry(hole_frame, textvariable=hole_cvy_var, width=8).grid(row=3, column=2, sticky="w", pady=(6, 0))
+    tk.Entry(hole_frame, textvariable=hole_cvz_var, width=8).grid(row=3, column=3, sticky="w", pady=(6, 0))
+
+    hole_sample_var = tk.StringVar(value="0.25")
+    hole_endrad_var = tk.StringVar(value="15.0")
+    tk.Label(hole_frame, text="sample (Å)：").grid(row=4, column=0, sticky="w", pady=(6, 0))
+    tk.Entry(hole_frame, textvariable=hole_sample_var, width=8).grid(row=4, column=1, sticky="w", pady=(6, 0))
+    tk.Label(hole_frame, text="endrad (Å)：").grid(row=4, column=2, sticky="w", pady=(6, 0))
+    tk.Entry(hole_frame, textvariable=hole_endrad_var, width=8).grid(row=4, column=3, sticky="w", pady=(6, 0))
+
+    hole_radius_var = tk.StringVar(value="simple.rad")
+    tk.Label(hole_frame, text="radius 文件名：").grid(row=5, column=0, sticky="w", pady=(6, 0))
+    tk.Entry(hole_frame, textvariable=hole_radius_var, width=20).grid(row=5, column=1, sticky="w", pady=(6, 0))
+
+    # 默认留空，让后台自动选择如何调用 HOLE
+    hole_cmd_var = tk.StringVar(value="")
+    tk.Label(hole_frame, text="HOLE 命令（可留空）：").grid(row=6, column=0, sticky="w", pady=(6, 0))
+    tk.Entry(hole_frame, textvariable=hole_cmd_var, width=24).grid(row=6, column=1, sticky="w", pady=(6, 0))
+
+    hole_run_var = tk.IntVar(value=0)
+    hole_parse_var = tk.IntVar(value=1)
+    tk.Checkbutton(
+        hole_frame,
+        text="自动在 WSL 中调用 HOLE",
+        variable=hole_run_var,
+    ).grid(row=7, column=0, columnspan=2, sticky="w", pady=(8, 0))
+    tk.Checkbutton(
+        hole_frame,
+        text="根据 *_hole.log 生成 CSV & 曲线图",
+        variable=hole_parse_var,
+    ).grid(row=7, column=2, columnspan=2, sticky="w", pady=(8, 0))
+
+    def on_prepare_hole_pdb():
+        """从 WT + 突变体列表，把对应 PDB 复制到 HOLE 工作目录，命名为 <模型名>.pdb。"""
+        base_dir = hole_base_dir_var.get().strip()
+        if not base_dir:
+            messagebox.showerror("缺少 HOLE 目录", "请先在 HOLE 区设置“HOLE 工作目录”。")
+            return
+
+        models_str = hole_models_var.get().strip()
+        if not models_str:
+            messagebox.showerror("缺少模型列表", "请先在 HOLE 区设置模型列表，比如 WT,DMI,DMT,GT,ND。")
+            return
+
+        models = [m.strip() for m in models_str.split(",") if m.strip()]
+        if not models:
+            messagebox.showerror("无模型", "模型列表似乎是空的。")
+            return
+
+        mapping = {}
+
+        if "WT" in models:
+            wt_path = wt_path_var.get().strip()
+            if not wt_path:
+                messagebox.showerror("缺少 WT PDB", "模型列表包含 WT，但上面没有选择 WT PDB。")
+                return
+            if not os.path.exists(wt_path):
+                messagebox.showerror("WT PDB 不存在", f"找不到 WT PDB 文件：\n{wt_path}")
+                return
+            mapping["WT"] = wt_path
+
+        label_to_pdb = {}
+        for idx, row in enumerate(mutant_rows, start=1):
+            label = (row["label_var"].get() or "").strip()
+            pdb = (row["pdb_var"].get() or "").strip()
+            if not label or not pdb:
+                continue
+            label_to_pdb[label] = pdb
+
+        for m in models:
+            if m == "WT":
+                continue
+            pdb_path = label_to_pdb.get(m)
+            if not pdb_path:
+                messagebox.showerror(
+                    "缺少突变体 PDB",
+                    f"模型列表包含 {m}，但在“突变体 PDB”区没有找到同名标签的行，"
+                    "请确保突变体标签和模型名一模一样。"
+                )
+                return
+            if not os.path.exists(pdb_path):
+                messagebox.showerror("PDB 文件不存在", f"{m} 对应的 PDB 不存在：\n{pdb_path}")
+                return
+            mapping[m] = pdb_path
+
+        os.makedirs(base_dir, exist_ok=True)
+
+        for label, src in mapping.items():
+            dst = os.path.join(base_dir, f"{label}.pdb")
+            try:
+                shutil.copy2(src, dst)
+            except Exception as e:
+                messagebox.showerror("复制失败", f"复制 {label} 时出错：\n{e}")
+                return
+
+        messagebox.showinfo(
+            "准备完成",
+            "已把 WT + 突变体 PDB 复制到 HOLE 工作目录：\n"
+            f"{base_dir}\n\n"
+            "文件名统一为：<模型名>.pdb。"
+        )
+
+    tk.Button(
+        hole_frame,
+        text="从 WT+突变体准备 HOLE PDB",
+        command=on_prepare_hole_pdb,
+    ).grid(row=8, column=0, columnspan=4, sticky="w", pady=(8, 0))
+
+    # ===== 自动推荐 cpoint / cvect 小工具 =====
+    axis_frame = tk.LabelFrame(hole_frame, text="自动推荐 cpoint / cvect", padx=8, pady=8)
+    axis_frame.grid(row=9, column=0, columnspan=4, sticky="we", pady=(10, 0))
+
+    axis_chain_var = tk.StringVar(value="A")
+    axis_res_expr_var = tk.StringVar(value="")
+    axis_log_var = tk.StringVar(value="axis_axis.log")
+
+    tk.Label(axis_frame, text="链 ID：").grid(row=0, column=0, sticky="w")
+    tk.Entry(axis_frame, textvariable=axis_chain_var, width=5).grid(row=0, column=1, sticky="w")
+
+    tk.Label(axis_frame, text="找轴残基表达式：").grid(row=0, column=2, sticky="w")
+    tk.Entry(axis_frame, textvariable=axis_res_expr_var, width=20).grid(row=0, column=3, sticky="w")
+
+    tk.Label(axis_frame, text="axis log 文件名：").grid(row=1, column=0, sticky="w", pady=(4, 0))
+    tk.Entry(axis_frame, textvariable=axis_log_var, width=20).grid(row=1, column=1, sticky="w", pady=(4, 0))
+
+    def on_generate_axis_cxc():
+        wt_pdb = wt_path_var.get().strip()
+        base_dir = hole_base_dir_var.get().strip()
+        chain = axis_chain_var.get().strip() or "A"
+        res_expr = axis_res_expr_var.get().strip()
+
+        if not wt_pdb:
+            messagebox.showerror("缺少 WT", "请先在上面选择 WT PDB。")
+            return
+        if not base_dir:
+            messagebox.showerror("缺少目录", "请先设置 HOLE 工作目录。")
+            return
+        if not res_expr:
+            messagebox.showerror("缺少残基", "请填写用于找轴的残基表达式（例如 298-300）。")
+            return
+
+        try:
+            axis_cxc = build_axis_cxc(
+                wt_pdb_path=wt_pdb,
+                chain_id=chain,
+                residue_expr=res_expr,
+                out_dir=base_dir,
+                label="axis",
+            )
+        except Exception as e:
+            messagebox.showerror("生成失败", f"创建找轴脚本时出错：\n{e}")
+            return
+
+        messagebox.showinfo(
+            "已生成找轴脚本",
+            "脚本路径：\n"
+            f"{axis_cxc}\n\n"
+            "接下来在 ChimeraX 中运行：\n"
+            f"runscript {axis_cxc}\n\n"
+            "跑完后会在 HOLE 目录生成 axis_axis.log。"
+        )
+
+    def on_fill_cpoint_from_axis_log():
+        base_dir = hole_base_dir_var.get().strip()
+        log_name = axis_log_var.get().strip() or "axis_axis.log"
+        if not base_dir:
+            messagebox.showerror("缺少目录", "请先设置 HOLE 工作目录。")
+            return
+
+        log_path = os.path.join(base_dir, log_name)
+        if not os.path.exists(log_path):
+            messagebox.showerror("找不到 log", f"没有发现日志文件：\n{log_path}")
+            return
+
+        try:
+            x, y, z = parse_axis_log(log_path)
+        except Exception as e:
+            messagebox.showerror("解析失败", f"解析质心坐标时出错：\n{e}")
+            return
+
+        hole_cpx_var.set(f"{x:.2f}")
+        hole_cpy_var.set(f"{y:.2f}")
+        hole_cpz_var.set(f"{z:.2f}")
+
+        hole_cvx_var.set("0.0")
+        hole_cvy_var.set("0.0")
+        hole_cvz_var.set("1.0")
+
+        messagebox.showinfo(
+            "已填入推荐轴",
+            f"推荐 cpoint = ({x:.2f}, {y:.2f}, {z:.2f})\n"
+            "cvect 已设为 (0.0, 0.0, 1.0)。"
+        )
+
+    tk.Button(axis_frame, text="生成找轴 .cxc", command=on_generate_axis_cxc).grid(
+        row=2, column=0, columnspan=2, sticky="w", pady=(6, 0)
+    )
+    tk.Button(
+        axis_frame,
+        text="从 axis log 填入 cpoint/cvect",
+        command=on_fill_cpoint_from_axis_log,
+    ).grid(row=2, column=2, columnspan=2, sticky="w", pady=(6, 0))
+
+    # ===== 生成按钮 =====
+    def on_generate():
+        wt_pdb = wt_path_var.get().strip()
+        if not wt_pdb:
+            messagebox.showerror("缺少 WT", "请先选择 WT 的 PDB 文件。")
+            return
+
+        mode = mode_var.get()
+
+        if mode == "mutate":
+            mut_out_dir = mut_out_dir_var.get().strip()
+            if not mut_out_dir:
+                messagebox.showerror("缺少输出目录", "请选择突变体输出目录。")
+                return
+
+            mutations = []
+            for idx, row in enumerate(mutation_rows, start=1):
+                residue = row["residue_var"].get().strip()
+                new_aa = row["new_aa_var"].get().strip().upper()
+                if not residue and not new_aa:
+                    continue
+                if not residue or not new_aa:
+                    messagebox.showerror("缺少参数", "突变行需要同时填写残基号和要改成的氨基酸。")
+                    return
+                label = row["label_var"].get().strip() or f"MUT{idx}"
+                chain = row["chain_var"].get().strip() or "A"
+                mutations.append({
+                    "label": label,
+                    "chain": chain,
+                    "residue": residue,
+                    "new_aa": new_aa,
+                })
+
+            if not mutations:
+                messagebox.showerror("没有突变", "请至少填写一行突变信息。")
+                return
+
+            generated_paths = []
+            try:
+                os.makedirs(mut_out_dir, exist_ok=True)
+                for mut in mutations:
+                    cxc_path = build_mutation_cxc(
+                        wt_pdb_path=wt_pdb,
+                        mut_label=mut["label"],
+                        chain=mut["chain"],
+                        residue=mut["residue"],
+                        new_aa=mut["new_aa"],
+                        out_dir=mut_out_dir,
+                    )
+                    generated_paths.append(cxc_path)
+            except Exception as e:
+                messagebox.showerror("生成失败", f"创建突变脚本时出错：\n{e}")
+                return
+
+            preview = "\n".join(generated_paths)
+            messagebox.showinfo(
+                "完成",
+                f"已生成 {len(generated_paths)} 个 swapaa 脚本：\n{preview}\n\n"
+                "在 ChimeraX 中执行：\n"
+                f"runscript {generated_paths[0]}"
+            )
+            return
+
+        if mode == "hole":
+            base_dir = hole_base_dir_var.get().strip()
+            if not base_dir:
+                messagebox.showerror("缺少目录", "请选择 HOLE 工作目录。")
+                return
+
+            models = [m.strip() for m in hole_models_var.get().split(",") if m.strip()]
+            if not models:
+                messagebox.showerror("缺少模型", "请至少填写一个模型名。")
+                return
+
+            try:
+                cpoint = (
+                    float(hole_cpx_var.get()),
+                    float(hole_cpy_var.get()),
+                    float(hole_cpz_var.get()),
+                )
+                cvect = (
+                    float(hole_cvx_var.get()),
+                    float(hole_cvy_var.get()),
+                    float(hole_cvz_var.get()),
+                )
+                sample = float(hole_sample_var.get())
+                endrad = float(hole_endrad_var.get())
+            except ValueError:
+                messagebox.showerror("参数错误", "cpoint/cvect/sample/endrad 请输入数字。")
+                return
+
+            radius_file = hole_radius_var.get().strip() or "simple.rad"
+            hole_cmd = hole_cmd_var.get().strip()
+            run_flag = bool(hole_run_var.get())
+            parse_flag = bool(hole_parse_var.get())
+
+            for m in models:
+                model_dir = os.path.join(base_dir, f"{m}-HOLE")
+                os.makedirs(model_dir, exist_ok=True)
+
+                src_pdb = os.path.join(base_dir, f"{m}.pdb")
+                if not os.path.exists(src_pdb):
+                    messagebox.showerror(
+                        "缺少 PDB",
+                        f"找不到 {m} 的 PDB 文件：\n{src_pdb}\n请先点击“从 WT+突变体准备 HOLE PDB”。",
+                    )
+                    return
+
+                dst_pdb = os.path.join(model_dir, f"{m}.pdb")
+                try:
+                    shutil.copy2(src_pdb, dst_pdb)
+                except Exception as e:
+                    messagebox.showerror("复制失败", f"复制 {m} 的 PDB 到子目录时出错：\n{e}")
+                    return
+
+                radius_src = os.path.join(base_dir, radius_file)
+                if os.path.isfile(radius_src):
+                    try:
+                        shutil.copy2(radius_src, os.path.join(model_dir, radius_file))
+                    except Exception:
+                        pass
+
+                try:
+                    hole_write_input(
+                        base_dir_win=model_dir,
+                        model=m,
+                        cpoint=cpoint,
+                        cvect=cvect,
+                        sample=sample,
+                        endrad=endrad,
+                        radius_filename=radius_file,
+                    )
+                except Exception as e:
+                    messagebox.showerror("生成失败", f"写入 {m} 的 HOLE 输入时出错：\n{e}")
+                    return
+
+            if run_flag:
+                for m in models:
+                    try:
+                        hole_run_in_wsl(
+                            base_dir_win=os.path.join(base_dir, f"{m}-HOLE"),
+                            model=m,
+                            hole_cmd=hole_cmd,
+                        )
+                    except Exception as e:
+                        messagebox.showerror("HOLE 运行失败", f"{m} 出错：{e}")
+                        return
+
+            summary_msg = []
+            if parse_flag:
+                logs = {}
+                for m in models:
+                    log_path = os.path.join(base_dir, f"{m}-HOLE", f"{m}_hole.log")
+                    if os.path.exists(log_path):
+                        logs[m] = log_path
+                    else:
+                        summary_msg.append(f"警告：没找到 {m}_hole.log，跳过。")
+
+                if logs:
+                    try:
+                        hole_summarize_logs(logs, base_dir)
+                        fig_path = hole_plot_profiles(logs, base_dir)
+                        summary_msg.append(
+                            "已生成：hole_profile_samples.csv, hole_min_table.csv, "
+                            "hole_min_summary.csv, "
+                            f"{os.path.basename(fig_path)}"
+                        )
+                    except Exception as e:
+                        messagebox.showerror("后处理失败", f"解析 log 或绘图时出错：\n{e}")
+                        return
+
+            msg_lines = [
+                "已为下列模型生成 HOLE 输入文件：",
+                ", ".join(models),
+            ]
+            if run_flag:
+                msg_lines.append("已尝试在 WSL 中运行 HOLE。")
+            if summary_msg:
+                msg_lines.append("")
+                msg_lines.extend(summary_msg)
+
+            messagebox.showinfo("HOLE 管道完成", "\n".join(msg_lines))
+            return
+
+        # ===== 研究模式 =====
+        mutants = []
+        for idx, row in enumerate(mutant_rows, start=1):
+            label = row["label_var"].get().strip() or f"MUT{idx}"
+            pdb = row["pdb_var"].get().strip()
+            if not pdb:
+                continue  # 路径空就忽略这一行
+            mutants.append({"label": label, "pdb": pdb})
+
+        features = {
+            "full_coulombic": bool(full_var.get()),
+            "contacts": bool(contacts_var.get()),
+            "hbonds": bool(hbonds_var.get()),
+            "sasa": bool(sasa_var.get()),
+        }
+        if not any(features.values()):
+            messagebox.showerror("没选功能", "至少勾选一个要自动执行的功能。")
+            return
+
+        chain_id = chain_var.get().strip() or "A"
+        residue_expr = residue_expr_var.get().strip()
+
+        need_residue = any(features[k] for k in ("contacts", "hbonds", "sasa"))
+        if need_residue and not residue_expr:
+            messagebox.showerror(
+                "缺少残基表达式",
+                "你勾选了 2/3/4 中的至少一项，必须填写目标残基表达式。"
+            )
+            return
+
+        out_dir = out_dir_var.get().strip()
+        if not out_dir:
+            messagebox.showerror("缺少输出目录", "请指定图片 / 文本的输出目录。")
+            return
+
+        cxc_path = cxc_path_var.get().strip()
+        if not cxc_path:
+            messagebox.showerror("缺少 .cxc 路径", "请指定要保存的 .cxc 脚本文件名。")
+            return
+
+        try:
+            script_text = build_cxc_script(
+                wt_pdb_path=wt_pdb,
+                mutant_list=mutants,
+                chain_id=chain_id,
+                residue_expr=residue_expr,
+                out_dir=out_dir,
+                features=features,
+            )
+        except Exception as e:
+            messagebox.showerror("生成失败", f"生成脚本时出错：\n{e}")
+            return
+
+        try:
+            os.makedirs(os.path.dirname(cxc_path), exist_ok=True)
+            with open(cxc_path, "w", encoding="utf-8") as f:
+                f.write(script_text)
+        except OSError as e:
+            messagebox.showerror("写文件失败", f"无法写入 .cxc 文件：\n{e}")
+            return
+
+        messagebox.showinfo(
+            "完成",
+            f"已生成 ChimeraX 脚本：\n{cxc_path}\n\n"
+            "在 ChimeraX 命令行中执行：\n"
+            f"runscript {cxc_path}"
+        )
+
+    def on_plot_hole_metrics():
+        base_dir = hole_base_dir_var.get().strip()
+        if not base_dir:
+            messagebox.showerror("缺少目录", "请选择 HOLE 工作目录。")
+            return
+
+        try:
+            paths = plot_basic_hole_metrics(base_dir)
+        except Exception as e:
+            messagebox.showerror("绘图失败", f"生成 HOLE 对比图时出错：\n{e}")
+            return
+
+        messagebox.showinfo(
+            "绘图完成",
+            "已在 HOLE 工作目录生成基础对比图：\n" + "\n".join(paths)
+        )
+
+    btn_frame = tk.Frame(research_container)
+    btn_frame.pack(fill="x", padx=10, pady=10)
+
+    tk.Button(btn_frame, text="生成 .cxc", command=on_generate, width=15).pack(side="left")
+
+    def on_summarize_sasa_hbonds():
+        out_dir = out_dir_var.get().strip()
+        if not out_dir:
+            messagebox.showerror("缺少输出目录", "请先在上面设置“图片 / 文本输出目录”。")
+            return
+
+        try:
+            summary_csv, detail_csv = summarize_sasa_hbonds(out_dir)
+        except Exception as e:
+            messagebox.showerror("汇总失败", f"解析 SASA/H-bonds 日志时出错：\n{e}")
+            return
+
+        labels = ["WT"]
+        for idx, row in enumerate(mutant_rows, start=1):
+            label = (row["label_var"].get() or "").strip()
+            if label:
+                labels.append(label)
+        labels = sorted(set(labels))
+
+        for label in labels:
+            subdir = os.path.join(out_dir, label)
+            os.makedirs(subdir, exist_ok=True)
+            prefix = f"{label}_"
+            for name in os.listdir(out_dir):
+                if not name.startswith(prefix):
+                    continue
+                src = os.path.join(out_dir, name)
+                if not os.path.isfile(src):
+                    continue
+                new_name = name[len(prefix):] if len(name) > len(prefix) else name
+                dst = os.path.join(subdir, new_name)
+                try:
+                    shutil.move(src, dst)
+                except Exception:
+                    continue
+
+        messagebox.showinfo(
+                "汇总完成",
+                "已生成：\n"
+                f"{summary_csv}\n"
+                f"{detail_csv}\n\n"
+                "可以用 Excel 打开做对比分析。"
+        )
+
+    def on_merge_all_metrics():
+        hole_dir = hole_base_dir_var.get().strip()
+        sasa_dir = out_dir_var.get().strip()
+
+        if not hole_dir:
+            messagebox.showerror("缺少 HOLE 目录", "请先在 HOLE 模式里设置 HOLE 工作目录。")
+            return
+        if not sasa_dir:
+            messagebox.showerror("缺少 SASA 目录", "请先在研究模式里设置“图片 / 文本输出目录”。")
+            return
+
+        metrics_all = os.path.join(sasa_dir, "metrics_all.csv")
+
+        try:
+            merge_all_metrics(hole_dir=hole_dir, sasa_dir=sasa_dir, out_csv=metrics_all)
+        except Exception as e:
+            messagebox.showerror("合并失败", f"merge_all_metrics 出错：\n{e}")
+            return
+
+        try:
+            scored_path = score_metrics_file(metrics_all, wt_name="WT", pdb_dir=hole_dir)
+        except Exception as e:
+            messagebox.showerror("评分失败", f"score_metrics 出错：\n{e}")
+            return
+
+        messagebox.showinfo(
+                "合并 + 评分完成",
+                "已生成 HOLE + SASA 总表：\n"
+                f"{metrics_all}\n\n"
+                "并已写出结构评分 + 置信度表：\n"
+                f"{scored_path}\n\n"
+                "metrics_scored.csv 里包含：\n"
+                "- r_min / gate_length / HBonds / SASA_residue\n"
+                "- GateTightScore / TotalScore / ScoreClass\n"
+                "- pLDDT 均值 / 中位数 / 低-中-高残基数 + ConfidenceClass"
+        )
+
+    tk.Button(
+            btn_frame,
+            text="汇总 SASA / H-bonds",
+            command=on_summarize_sasa_hbonds,
+            width=18,
+    ).pack(side="left", padx=8)
+
+    tk.Button(
+            btn_frame,
+            text="合并 HOLE + SASA 指标",
+            command=on_merge_all_metrics,
+            width=22,
+    ).pack(side="left", padx=8)
+
+    tk.Label(
+        btn_frame,
+        text="先在 ChimeraX 里 runscript 跑完，再点汇总，就会吐出 CSV 指标表。",
+        fg="#555"
+    ).pack(side="left", padx=10)
+    tk.Label(
+        btn_frame,
+        text="窗口不会自动退出。",
+        fg="#555"
+    ).pack(side="left", padx=10)
+
+    # ===== 突变模式：突变体构建 =====
+    mut_builder_frame = tk.LabelFrame(mutate_container, text="突变体构建（swapaa）", padx=8, pady=8)
+    mut_builder_frame.pack(fill="x", padx=10, pady=5)
+
+    tk.Label(
+        mut_builder_frame,
+        text="一次配置多个突变，生成对应的 swapaa .cxc（输出在所选目录/MUT/ 下）。",
+        fg="#555"
+    ).grid(row=0, column=0, columnspan=6, sticky="w")
+    tk.Label(
+        mut_builder_frame,
+        text="提示：链 ID / 残基号 / 目标氨基酸都可以用逗号或空格分隔多个（数量要匹配）。",
+        fg="#777"
+    ).grid(row=1, column=0, columnspan=6, sticky="w", pady=(4, 0))
+
+    mutation_rows = []
+    mutations_scroll = ScrollableFrame(mut_builder_frame, height=200)
+    mutations_scroll.grid(row=2, column=0, columnspan=6, sticky="nsew", pady=(8, 4))
+    mutations_inner = mutations_scroll.scrollable_frame
+    mut_builder_frame.grid_rowconfigure(2, weight=1)
+    mut_builder_frame.grid_columnconfigure(0, weight=1)
+
+    def add_mutation_row(default_label=None):
+        idx = len(mutation_rows) + 1
+        row = tk.Frame(mutations_inner)
+        row.pack(fill="x", pady=2)
+
+        label_var = tk.StringVar(value=default_label or f"MUT{idx}")
+        chain_var = tk.StringVar(value="A")
+        residue_var = tk.StringVar()
+        new_aa_var = tk.StringVar()
+
+        tk.Label(row, text="标签：").grid(row=0, column=0, sticky="w")
+        tk.Entry(row, textvariable=label_var, width=10).grid(row=0, column=1, sticky="w", padx=(0, 10))
+
+        tk.Label(row, text="链(可多个)：").grid(row=0, column=2, sticky="w")
+        tk.Entry(row, textvariable=chain_var, width=5).grid(row=0, column=3, sticky="w", padx=(0, 10))
+
+        tk.Label(row, text="残基号(可多个)：").grid(row=0, column=4, sticky="w")
+        tk.Entry(row, textvariable=residue_var, width=8).grid(row=0, column=5, sticky="w", padx=(0, 10))
+
+        tk.Label(row, text="改成(可多个)：").grid(row=0, column=6, sticky="w")
+        tk.Entry(row, textvariable=new_aa_var, width=12).grid(row=0, column=7, sticky="w", padx=(0, 10))
+
+        def delete_row():
+            if row_dict in mutation_rows:
+                mutation_rows.remove(row_dict)
+            row.destroy()
+
+        del_btn = tk.Button(row, text="删除", fg="red", command=delete_row)
+        del_btn.grid(row=0, column=8, padx=(0, 5))
+
+        row_dict = {
+            "label_var": label_var,
+            "chain_var": chain_var,
+            "residue_var": residue_var,
+            "new_aa_var": new_aa_var,
+            "frame": row,
+        }
+        mutation_rows.append(row_dict)
+
+    add_mutation_row()
+
+    tk.Button(mut_builder_frame, text="添加突变", command=add_mutation_row).grid(
+        row=3, column=0, columnspan=2, sticky="w", pady=(4, 0)
+    )
+
+    mut_out_dir_var = tk.StringVar(value=os.path.join("D:\\", "demo"))
+    tk.Label(mut_builder_frame, text="输出目录：").grid(row=4, column=0, sticky="w", pady=(10, 0))
+    tk.Entry(mut_builder_frame, textvariable=mut_out_dir_var, width=50).grid(
+        row=4, column=1, columnspan=4, sticky="w", pady=(10, 0)
+    )
+
+    def browse_mut_out_dir():
+        path = filedialog.askdirectory(title="选择输出目录")
+        if path:
+            mut_out_dir_var.set(path)
+
+    tk.Button(mut_builder_frame, text="浏览", command=browse_mut_out_dir).grid(
+        row=4, column=5, padx=5, pady=(10, 0)
+    )
+
+    mut_btn_frame = tk.Frame(mutate_container)
+    mut_btn_frame.pack(fill="x", padx=10, pady=10)
+    tk.Button(mut_btn_frame, text="生成突变脚本", command=on_generate, width=18).pack(side="left")
+    tk.Label(
+        mut_btn_frame,
+        text="勾选突变模式后，只会生成 swapaa 的 .cxc 文件。",
+        fg="#555"
+    ).pack(side="left", padx=10)
+
+    hole_btn_frame = tk.Frame(hole_container)
+    hole_btn_frame.pack(fill="x", padx=10, pady=10)
+    tk.Button(hole_btn_frame, text="执行 HOLE 管道", command=on_generate, width=18).pack(side="left")
+    tk.Button(
+        hole_btn_frame,
+        text="画 HOLE 对比图",
+        command=on_plot_hole_metrics,
+        width=18,
+    ).pack(side="left", padx=8)
+
+    # 默认展示研究模式
+    update_mode()
+
+    return root
+
+class ScrollableFrame(tk.Frame):
+    def __init__(self, container, *args, height=280, **kwargs):
+        super().__init__(container, *args, **kwargs)
+
+        canvas = tk.Canvas(self, height=height)
+        scrollbar = tk.Scrollbar(self, orient="vertical", command=canvas.yview)
+        self.scrollable_frame = tk.Frame(canvas)
+
+        self.scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(
+                scrollregion=canvas.bbox("all")
+            )
+        )
+
+        canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+
+
+if __name__ == "__main__":
+    app = create_gui()
+    app.mainloop()
