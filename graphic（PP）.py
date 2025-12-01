@@ -16,6 +16,7 @@ from PP import (
     plot_basic_hole_metrics,
     merge_all_metrics,
     score_metrics_file,
+    run_osakt2_msa,
 )
 
 
@@ -258,6 +259,82 @@ def create_gui():
             cxc_path_var.set(path)
 
     tk.Button(out_frame, text="浏览", command=browse_cxc_file).grid(row=1, column=2, padx=5, pady=(6, 0))
+
+    # ===== MSA 自动候选 =====
+    msa_frame = tk.LabelFrame(
+        research_container,
+        text="MSA 自动候选小工具（Clustal-Omega + OsAKT2）",
+        padx=8,
+        pady=8,
+    )
+    msa_frame.pack(fill="x", padx=10, pady=5)
+
+    msa_fasta_var = tk.StringVar()
+    msa_clustal_cmd_var = tk.StringVar(value="clustalo")
+
+    tk.Label(msa_frame, text="多序列 FASTA：").grid(row=0, column=0, sticky="w")
+    tk.Entry(msa_frame, textvariable=msa_fasta_var, width=60).grid(
+        row=0, column=1, sticky="w"
+    )
+
+    def browse_msa_fasta():
+        path = filedialog.askopenfilename(
+            title="选择多序列 FASTA",
+            filetypes=[
+                ("FASTA", "*.fasta *.fa *.faa *.fna *.fas"),
+                ("All files", "*.*"),
+            ],
+        )
+        if path:
+            msa_fasta_var.set(path)
+
+    tk.Button(msa_frame, text="浏览", command=browse_msa_fasta).grid(
+        row=0, column=2, padx=5
+    )
+
+    tk.Label(msa_frame, text="Clustal 命令：").grid(
+        row=1, column=0, sticky="w", pady=(6, 0)
+    )
+    tk.Entry(msa_frame, textvariable=msa_clustal_cmd_var, width=20).grid(
+        row=1, column=1, sticky="w", pady=(6, 0)
+    )
+
+    def on_run_msa():
+        fasta = msa_fasta_var.get().strip()
+        if not fasta:
+            messagebox.showerror("缺少 FASTA", "请先选择多序列 FASTA 文件。")
+            return
+
+        cmd = msa_clustal_cmd_var.get().strip() or "clustalo"
+
+        try:
+            aln_path, view_csv, cand_csv = run_osakt2_msa(
+                fasta_path=fasta,
+                clustalo_cmd=cmd,
+            )
+        except Exception as e:
+            messagebox.showerror(
+                "MSA 失败",
+                f"运行 Clustal-Omega 或解析对齐时出错：\n{e}",
+            )
+            return
+
+        messagebox.showinfo(
+            "MSA 完成",
+            "已生成：\n"
+            f"{aln_path}\n"
+            f"{view_csv}\n"
+            f"{cand_csv}\n\n"
+            "接下来可以用 Excel 打开 candidate_sites_auto_v0.1.csv，"
+            "挑 3–5 个点搬到 candidate_sites_v0.1.xlsx。",
+        )
+
+    tk.Button(
+        msa_frame,
+        text="跑 MSA + 自动候选",
+        command=on_run_msa,
+        width=20,
+    ).grid(row=1, column=2, padx=5, pady=(6, 0))
 
     # ===== HOLE 管道配置 =====
     hole_frame = tk.LabelFrame(hole_container, text="HOLE 管道配置", padx=8, pady=8)
