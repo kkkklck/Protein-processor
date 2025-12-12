@@ -208,18 +208,18 @@ def create_gui():
     ).grid(row=1, column=1, sticky="w")
     tk.Checkbutton(
         feature_frame,
-        text="5. gate_sites 局部接触图（P-loop + Top3）",
+        text="5. ROI 局部接触图（自定义）",
         variable=sites_contacts_var,
     ).grid(row=2, column=0, sticky="w", pady=(4, 0))
     tk.Checkbutton(
         feature_frame,
-        text="6. gate_sites 静电势图（P-loop + Top3）",
+        text="6. ROI 静电势图（自定义）",
         variable=sites_coulombic_var,
     ).grid(row=2, column=1, sticky="w", pady=(4, 0))
 
     tk.Label(
         feature_frame,
-        text="说明：2 / 3 / 4 需要你指定“目标残基”，只勾 1 或 5 / 6 的话可以不填残基。",
+        text="说明：2 / 3 / 4 需要指定“目标残基”；5 / 6 必须指定 ROI 残基表达式；只勾 1 时可以都不填。",
         fg="#555"
     ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(4, 0))
 
@@ -229,6 +229,7 @@ def create_gui():
 
     chain_var = tk.StringVar(value="A")
     residue_expr_var = tk.StringVar()
+    roi_expr_var = tk.StringVar()
 
     tk.Label(target_frame, text="链 ID：").grid(row=0, column=0, sticky="w")
     tk.Entry(target_frame, textvariable=chain_var, width=5).grid(row=0, column=1, sticky="w")
@@ -241,6 +242,14 @@ def create_gui():
         text="例：298,299,300 或 298-305。",
         fg="#555"
     ).grid(row=1, column=0, columnspan=4, sticky="w", pady=(4, 0))
+
+    tk.Label(target_frame, text="ROI 残基表达式（用于 5/6）：").grid(row=2, column=0, sticky="w", pady=(8, 0))
+    tk.Entry(target_frame, textvariable=roi_expr_var, width=40).grid(row=2, column=1, columnspan=3, sticky="w", pady=(8, 0))
+    tk.Label(
+        target_frame,
+        text="例：283,286,291,298-300 或 45-60,120,155-170。",
+        fg="#555",
+    ).grid(row=3, column=0, columnspan=4, sticky="w", pady=(4, 0))
 
     # ===== 输出设置 =====
     out_frame = tk.LabelFrame(research_container, text="输出位置", padx=8, pady=8)
@@ -780,6 +789,7 @@ def create_gui():
 
         chain_id = chain_var.get().strip() or "A"
         residue_expr = residue_expr_var.get().strip()
+        roi_expr = roi_expr_var.get().strip()
 
         need_residue = any(features[k] for k in ("contacts", "hbonds", "sasa"))
         if need_residue and not residue_expr:
@@ -787,6 +797,11 @@ def create_gui():
                 "缺少残基表达式",
                 "你勾选了 2/3/4 中的至少一项，必须填写目标残基表达式。"
             )
+            return
+
+        need_roi = any(features[k] for k in ("sites_contacts", "sites_coulombic"))
+        if need_roi and not roi_expr:
+            messagebox.showerror("缺少 ROI", "你勾选了 5/6，必须填写 ROI 残基表达式或导入位点表。")
             return
 
         out_dir = out_dir_var.get().strip()
@@ -807,6 +822,7 @@ def create_gui():
                 residue_expr=residue_expr,
                 out_dir=out_dir,
                 features=features,
+                roi_expr=roi_expr,
             )
         except Exception as e:
             messagebox.showerror("生成失败", f"生成脚本时出错：\n{e}")
