@@ -342,6 +342,63 @@ def score_metrics_file(csv_path: str, wt_name: str = "WT", pdb_dir: str | None =
         df.to_csv(out_path, index=False, encoding="utf-8-sig")
         return out_path
 
+def make_stage3_table(out_dir: str, pick_models: List[str] | None = None) -> str:
+    """
+    生成 Stage3 决策表模板：
+    - 读取 metrics_all.csv（若存在 metrics_scored*.csv 也一起并入新列）
+    - 追加两列定性占位符：Patch_Electrostatics、Contacts_Qualitative
+    - 若 gate_sites 图已生成，则填入对应的图片路径
+    返回写出的 stage3_table.csv 路径。
+    """
+
+    if _pd is None:
+        raise RuntimeError("需要 pandas 才能生成 Stage3 表格。")
+
+    out_dir = (out_dir or "").strip()
+    if not out_dir:
+        raise ValueError("out_dir 不能为空")
+
+    metrics_all = os.path.join(out_dir, "metrics_all.csv")
+    if not os.path.isfile(metrics_all):
+        raise FileNotFoundError(f"找不到 metrics_all.csv：{metrics_all}")
+
+    df = _pd.read_csv(metrics_all)
+
+    if pick_models:
+        pick_models = [m for m in pick_models if m in df["Model"].astype(str).tolist()]
+
+    for scored_path in sorted(glob.glob(os.path.join(out_dir, "metrics_scored*.csv"))):
+        scored_df = _pd.read_csv(scored_path)
+        if "Model" not in scored_df.columns:
+            continue
+        new_cols = [c for c in scored_df.columns if c != "Model" and c not in df.columns]
+        if not new_cols:
+            continue
+        df = df.merge(scored_df[["Model", *new_cols]], on="Model", how="left")
+
+    if pick_models:
+        df = df[df["Model"].isin(pick_models)]
+        if pick_models:
+            df["Model"] = _pd.Categorical(df["Model"], pick_models)
+            df = df.sort_values("Model")
+            df["Model"] = df["Model"].astype(str)
+
+    sites_dir = os.path.join(out_dir, "gate_sites")
+
+    def _img_path(label: str, suffix: str) -> str:
+        path = os.path.join(sites_dir, f"{label}_{suffix}.png")
+        return path if os.path.exists(path) else ""
+
+    df["Patch_Electrostatics"] = ""
+    df["Contacts_Qualitative"] = ""
+    df["sites_contacts_img"] = df["Model"].apply(lambda m: _img_path(str(m), "sites_contacts"))
+    df["sites_coulombic_img"] = df["Model"].apply(lambda m: _img_path(str(m), "sites_coulombic"))
+
+    os.makedirs(out_dir, exist_ok=True)
+    out_path = os.path.join(out_dir, "stage3_table.csv")
+    df.to_csv(out_path, index=False, encoding="utf-8-sig")
+    return out_path
+
 def run_osakt2_msa(
         fasta_path: str,
         clustalo_cmd: str = "clustalo",
@@ -863,7 +920,7 @@ def build_cxc_script(
     chain_id: str,
     residue_expr: str,
     out_dir: str,
-    features: Dict[str, bool],
+        features: Dict[str, bool],
 ) -> str:
     """
     根据配置拼出 ChimeraX .cxc 脚本文本。
@@ -873,10 +930,15 @@ def build_cxc_script(
         "contacts": bool,
         "hbonds": bool,
         "sasa": bool,
+        "sites_contacts": bool,
+        "sites_coulombic": bool,
     }
     """
     out_dir_cx = normalize_path_for_chimerax(out_dir)
     wt_pdb_cx = normalize_path_for_chimerax(wt_pdb_path)
+
+    if features.get("sites_contacts") or features.get("sites_coulombic"):
+        os.makedirs(os.path.join(out_dir, "gate_sites"), exist_ok=True)
 
     # 清理残基表达式（去空格）
     residue_expr = (residue_expr or "").replace(" ", "")
@@ -1025,6 +1087,63 @@ def build_cxc_script(
             add("measure sasa #%d/%s:%s" % (mid, chain_id, residue_expr))
             add("info residues #%d/%s:%s attribute area" % (mid, chain_id, residue_expr))
             add('log save "%s/%s_sasa.html" executableLinks false' % (out_dir_cx, label))
+            add("")
+
+    # gate_sites 局部批处理
+    if features.get("sites_contacts") or features.get("sites_coulombic"):
+        sites_expr = "283,286,291,298-300"
+        sites_dir_cx = f"{out_dir_cx}/gate_sites"
+
+        add("# ===================== gate_sites 统一视角批处理 =====================")
+        add("close all")
+        add(f'open "{wt_pdb_cx}"')
+        add("hide atoms")
+        add("cartoon #1")
+        add("color #1 white")
+        add(f"show #1/{chain_id}:{sites_expr}")
+        add(f"color #1/{chain_id}:{sites_expr} yellow")
+        add(f"style #1/{chain_id}:{sites_expr} stick")
+        add(f"view #1/{chain_id}:{sites_expr}")
+        add("scale 1.8")
+        add("clip near 5")
+        add("clip far 50")
+        add("view name osakt2_sites")
+        add("close #1")
+        add("")
+
+        site_models = [("WT", wt_pdb_cx)] + [
+            (m.get("label", "MUT"), normalize_path_for_chimerax(m["pdb"]))
+            for m in mutant_list
+        ]
+
+        for label, pdb_cx in site_models:
+            add(f'open "{pdb_cx}"')
+            add("view osakt2_sites")
+            add("hide atoms")
+            add("cartoon #1")
+            add("color #1 white")
+
+            if features.get("sites_contacts"):
+                add("surface #1")
+                add("transparency #1 60")
+                add(f"show #1/{chain_id}:{sites_expr}")
+                add(f"color #1/{chain_id}:{sites_expr} yellow")
+                add(f"style #1/{chain_id}:{sites_expr} stick")
+                add(f"contacts #1/{chain_id}:{sites_expr} distanceOnly 4 reveal true")
+                add(
+                    f'save "{sites_dir_cx}/{label}_sites_contacts.png" '
+                    "width 1600 height 1000 supersample 3"
+                )
+
+            if features.get("sites_coulombic"):
+                add("surface #1")
+                add("coulombic protein surfaces #1")
+                add(
+                    f'save "{sites_dir_cx}/{label}_sites_coulombic.png" '
+                    "width 1600 height 1000 supersample 3"
+                )
+
+            add("close #1")
             add("")
 
     add("# === 脚本结束 ===")
