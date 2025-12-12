@@ -338,9 +338,9 @@ def score_metrics_file(csv_path: str, wt_name: str = "WT", pdb_dir: str | None =
         conf_df = plddt_summary_for_models(pdb_dir, df["Model"].astype(str).tolist())
         df = df.merge(conf_df, on="Model", how="left")
 
-        out_path = os.path.join(os.path.dirname(csv_path), "metrics_scored.csv")
-        df.to_csv(out_path, index=False, encoding="utf-8-sig")
-        return out_path
+    out_path = os.path.join(os.path.dirname(csv_path), "metrics_scored.csv")
+    df.to_csv(out_path, index=False, encoding="utf-8-sig")
+    return out_path
 
 def make_stage3_table(out_dir: str, pick_models: List[str] | None = None) -> str:
     """
@@ -1101,55 +1101,51 @@ def build_cxc_script(
         sites_dir_cx = f"{out_dir_cx}/gate_sites"
 
         add("# ===================== ROI 统一视角批处理 =====================")
-        add("close all")
-        add(f'open "{wt_pdb_cx}"')
-        add("hide atoms")
-        add("cartoon #1")
-        add("color #1 white")
-        add(f"show #1/{chain_id}:{roi_expr}")
-        add(f"color #1/{chain_id}:{roi_expr} yellow")
-        add(f"style #1/{chain_id}:{roi_expr} stick")
-        add(f"view #1/{chain_id}:{roi_expr}")
+        add("hide #1-%d" % last_id)
+        add("show #%d" % wt_id)
+        add(f"show #{wt_id}/{chain_id}:{roi_expr}")
+        add(f"view #{wt_id}/{chain_id}:{roi_expr}")
         add("scale 1.8")
         add("clip near 5")
         add("clip far 50")
-        add(f"view name {roi_view_name}")
-        add("close #1")
+        add(f"view name \"{roi_view_name}\"")
+        add("delete pseudobonds")
         add("")
 
-        site_models = [("WT", wt_pdb_cx)] + [
-            (m.get("label", "MUT"), normalize_path_for_chimerax(m["pdb"]))
-            for m in mutant_list
-        ]
+        site_models = [{"label": "WT", "model_id": wt_id}, *mutant_list]
 
-        for label, pdb_cx in site_models:
-            add(f'open "{pdb_cx}"')
-            add(f"view {roi_view_name}")
+        for m in site_models:
+            label = m.get("label", "MUT")
+            mid = m["model_id"]
+            add("# ——%s ROI——" % label)
+            add("hide #1-%d" % last_id)
+            add(f"show #{mid}")
+            add(f"view \"{roi_view_name}\"")
             add("hide atoms")
-            add("cartoon #1")
-            add("color #1 white")
+            add(f"cartoon #{mid}")
+            add(f"color #{mid} white")
 
             if features.get("sites_contacts"):
-                add("surface #1")
-                add("transparency #1 60")
-                add(f"show #1/{chain_id}:{roi_expr}")
-                add(f"color #1/{chain_id}:{roi_expr} yellow")
-                add(f"style #1/{chain_id}:{roi_expr} stick")
-                add(f"contacts #1/{chain_id}:{roi_expr} distanceOnly 4 reveal true")
+                add(f"surface #{mid}")
+                add(f"transparency #{mid} 60")
+                add(f"show #{mid}/{chain_id}:{roi_expr}")
+                add(f"color #{mid}/{chain_id}:{roi_expr} yellow")
+                add(f"style #{mid}/{chain_id}:{roi_expr} stick")
+                add(f"contacts #{mid}/{chain_id}:{roi_expr} distanceOnly 4 reveal true")
                 add(
                     f'save "{sites_dir_cx}/{label}_sites_contacts.png" '
                     "width 1600 height 1000 supersample 3"
                 )
+                add("delete pseudobonds")
 
             if features.get("sites_coulombic"):
-                add("surface #1")
-                add("coulombic protein surfaces #1")
+                add(f"surface #{mid}")
+                add(f"coulombic protein surfaces #{mid}")
                 add(
                     f'save "{sites_dir_cx}/{label}_sites_coulombic.png" '
                     "width 1600 height 1000 supersample 3"
                 )
 
-            add("close #1")
             add("")
 
     add("# === 脚本结束 ===")
