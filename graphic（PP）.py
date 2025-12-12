@@ -16,6 +16,7 @@ from PP import (
     plot_basic_hole_metrics,
     merge_all_metrics,
     score_metrics_file,
+    make_stage3_table,
     run_osakt2_msa_wsl,
 )
 
@@ -190,6 +191,8 @@ def create_gui():
     contacts_var = tk.IntVar(value=1)
     hbonds_var = tk.IntVar(value=1)
     sasa_var = tk.IntVar(value=1)
+    sites_contacts_var = tk.IntVar(value=1)
+    sites_coulombic_var = tk.IntVar(value=1)
 
     tk.Checkbutton(
         feature_frame, text="1. FULL 静电势图", variable=full_var
@@ -203,12 +206,22 @@ def create_gui():
     tk.Checkbutton(
         feature_frame, text="4. 目标残基 SASA", variable=sasa_var
     ).grid(row=1, column=1, sticky="w")
+    tk.Checkbutton(
+        feature_frame,
+        text="5. gate_sites 局部接触图（P-loop + Top3）",
+        variable=sites_contacts_var,
+    ).grid(row=2, column=0, sticky="w", pady=(4, 0))
+    tk.Checkbutton(
+        feature_frame,
+        text="6. gate_sites 静电势图（P-loop + Top3）",
+        variable=sites_coulombic_var,
+    ).grid(row=2, column=1, sticky="w", pady=(4, 0))
 
     tk.Label(
         feature_frame,
-        text="说明：2 / 3 / 4 需要你指定“目标残基”，只勾 1 的话可以不填残基。",
+        text="说明：2 / 3 / 4 需要你指定“目标残基”，只勾 1 或 5 / 6 的话可以不填残基。",
         fg="#555"
-    ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(4, 0))
+    ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(4, 0))
 
     # ===== 目标残基 & 链 =====
     target_frame = tk.LabelFrame(research_container, text="目标残基（可选）", padx=8, pady=8)
@@ -758,6 +771,8 @@ def create_gui():
             "contacts": bool(contacts_var.get()),
             "hbonds": bool(hbonds_var.get()),
             "sasa": bool(sasa_var.get()),
+            "sites_contacts": bool(sites_contacts_var.get()),
+            "sites_coulombic": bool(sites_coulombic_var.get()),
         }
         if not any(features.values()):
             messagebox.showerror("没选功能", "至少勾选一个要自动执行的功能。")
@@ -904,15 +919,35 @@ def create_gui():
             return
 
         messagebox.showinfo(
-                "合并 + 评分完成",
-                "已生成 HOLE + SASA 总表：\n"
-                f"{metrics_all}\n\n"
-                "并已写出结构评分 + 置信度表：\n"
-                f"{scored_path}\n\n"
-                "metrics_scored.csv 里包含：\n"
-                "- r_min / gate_length / HBonds / SASA_residue\n"
-                "- GateTightScore / TotalScore / ScoreClass\n"
-                "- pLDDT 均值 / 中位数 / 低-中-高残基数 + ConfidenceClass"
+            "合并 + 评分完成",
+            "已生成 HOLE + SASA 总表：\n"
+            f"{metrics_all}\n\n"
+            "并已写出结构评分 + 置信度表：\n"
+            f"{scored_path}\n\n"
+            "metrics_scored.csv 里包含：\n"
+            "- r_min / gate_length / HBonds / SASA_residue\n"
+            "- GateTightScore / TotalScore / ScoreClass\n"
+            "- pLDDT 均值 / 中位数 / 低-中-高残基数 + ConfidenceClass"
+        )
+
+    def on_make_stage3_table():
+        sasa_dir = out_dir_var.get().strip()
+
+        if not sasa_dir:
+            messagebox.showerror("缺少输出目录", "请先在研究模式里设置“图片 / 文本输出目录”。")
+            return
+
+        try:
+            table_path = make_stage3_table(sasa_dir)
+        except Exception as e:
+            messagebox.showerror("生成失败", f"make_stage3_table 出错：\n{e}")
+            return
+
+        messagebox.showinfo(
+            "Stage3 表已生成",
+            "已生成 Stage3 决策表模板：\n"
+            f"{table_path}\n\n"
+            "Patch_Electrostatics / Contacts_Qualitative 两列留空，方便看图填写。",
         )
 
     tk.Button(
@@ -925,8 +960,15 @@ def create_gui():
     tk.Button(
             btn_frame,
             text="合并 HOLE + SASA 指标",
-            command=on_merge_all_metrics,
-            width=22,
+        command=on_merge_all_metrics,
+        width=22,
+    ).pack(side="left", padx=8)
+
+    tk.Button(
+        btn_frame,
+        text="生成 Stage3 决策表模板",
+        command=on_make_stage3_table,
+        width=22,
     ).pack(side="left", padx=8)
 
     tk.Label(
