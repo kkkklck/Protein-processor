@@ -1,4 +1,4 @@
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional
 from collections import defaultdict
 import statistics
 from pathlib import Path
@@ -920,11 +920,14 @@ def build_cxc_script(
     chain_id: str,
     residue_expr: str,
     out_dir: str,
-        features: Dict[str, bool],
+    features: Dict[str, bool],
+    roi_expr: Optional[str] = None,
+    roi_view_name: str = "ROI",
 ) -> str:
     """
     根据配置拼出 ChimeraX .cxc 脚本文本。
     residue_expr: 目标残基表达式，例如 "298,299,300" 或 "298-305"
+    roi_expr: ROI 残基表达式，用于局部视角 5/6，例如 "283,286,291,298-300"
     features: {
         "full_coulombic": bool,
         "contacts": bool,
@@ -937,12 +940,16 @@ def build_cxc_script(
     out_dir_cx = normalize_path_for_chimerax(out_dir)
     wt_pdb_cx = normalize_path_for_chimerax(wt_pdb_path)
 
-    if features.get("sites_contacts") or features.get("sites_coulombic"):
-        os.makedirs(os.path.join(out_dir, "gate_sites"), exist_ok=True)
-
     # 清理残基表达式（去空格）
     residue_expr = (residue_expr or "").replace(" ", "")
+    roi_expr = (roi_expr or "").replace(" ", "")
     chain_id = (chain_id or "A").strip()
+
+    if (features.get("sites_contacts") or features.get("sites_coulombic")) and not roi_expr:
+        raise ValueError("roi_expr 不能为空：已勾选 5/6，但没有 ROI 残基表达式。")
+
+    if features.get("sites_contacts") or features.get("sites_coulombic"):
+        os.makedirs(os.path.join(out_dir, "gate_sites"), exist_ok=True)
 
     lines: List[str] = []
     add = lines.append
@@ -1089,25 +1096,24 @@ def build_cxc_script(
             add('log save "%s/%s_sasa.html" executableLinks false' % (out_dir_cx, label))
             add("")
 
-    # gate_sites 局部批处理
-    if features.get("sites_contacts") or features.get("sites_coulombic"):
-        sites_expr = "283,286,291,298-300"
+    # ROI 局部批处理
+    if (features.get("sites_contacts") or features.get("sites_coulombic")) and roi_expr:
         sites_dir_cx = f"{out_dir_cx}/gate_sites"
 
-        add("# ===================== gate_sites 统一视角批处理 =====================")
+        add("# ===================== ROI 统一视角批处理 =====================")
         add("close all")
         add(f'open "{wt_pdb_cx}"')
         add("hide atoms")
         add("cartoon #1")
         add("color #1 white")
-        add(f"show #1/{chain_id}:{sites_expr}")
-        add(f"color #1/{chain_id}:{sites_expr} yellow")
-        add(f"style #1/{chain_id}:{sites_expr} stick")
-        add(f"view #1/{chain_id}:{sites_expr}")
+        add(f"show #1/{chain_id}:{roi_expr}")
+        add(f"color #1/{chain_id}:{roi_expr} yellow")
+        add(f"style #1/{chain_id}:{roi_expr} stick")
+        add(f"view #1/{chain_id}:{roi_expr}")
         add("scale 1.8")
         add("clip near 5")
         add("clip far 50")
-        add("view name osakt2_sites")
+        add(f"view name {roi_view_name}")
         add("close #1")
         add("")
 
@@ -1118,7 +1124,7 @@ def build_cxc_script(
 
         for label, pdb_cx in site_models:
             add(f'open "{pdb_cx}"')
-            add("view osakt2_sites")
+            add(f"view {roi_view_name}")
             add("hide atoms")
             add("cartoon #1")
             add("color #1 white")
@@ -1126,10 +1132,10 @@ def build_cxc_script(
             if features.get("sites_contacts"):
                 add("surface #1")
                 add("transparency #1 60")
-                add(f"show #1/{chain_id}:{sites_expr}")
-                add(f"color #1/{chain_id}:{sites_expr} yellow")
-                add(f"style #1/{chain_id}:{sites_expr} stick")
-                add(f"contacts #1/{chain_id}:{sites_expr} distanceOnly 4 reveal true")
+                add(f"show #1/{chain_id}:{roi_expr}")
+                add(f"color #1/{chain_id}:{roi_expr} yellow")
+                add(f"style #1/{chain_id}:{roi_expr} stick")
+                add(f"contacts #1/{chain_id}:{roi_expr} distanceOnly 4 reveal true")
                 add(
                     f'save "{sites_dir_cx}/{label}_sites_contacts.png" '
                     "width 1600 height 1000 supersample 3"
