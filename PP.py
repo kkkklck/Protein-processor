@@ -42,15 +42,20 @@ ONE_TO_THREE = {
     "V": "VAL",
 }
 
-# ===== HOLE / WSL 默认配置（你只需要在自己电脑上改一次） =====
+# ===== HOLE / WSL 默认配置（只需要在自己电脑上改一次） =====
 # 1. 在 WSL 里执行 `conda info --base` 得到 conda 的 base 路径，比如：
 #    /home/k/miniforge3
 # 2. 把 HOLE_WSL_CONDA_INIT 改成  <base>/etc/profile.d/conda.sh
-# 3. 把 HOLE_WSL_CONDA_ENV 改成你安装 hole 的那个环境名（例如 "hole_env"）
+# 3. 把 HOLE_WSL_CONDA_ENV 改成安装 hole 的那个环境名（例如 "hole_env"）
 
 HOLE_WSL_CONDA_INIT = "$HOME/miniforge3/etc/profile.d/conda.sh"  # ← 根据实际路径改
 HOLE_WSL_CONDA_ENV = "hole_env"  # ← 根据实际 env 名改
 HOLE_WSL_EXE = "hole"  # env 里 HOLE 的命令名
+
+# ===== Clustal-Omega / WSL 默认配置 =====
+# lck这台机子现在的路径是 /usr/bin/clustalo
+# 如果以后换机器，只需要改这里。
+CLUSTALO_WSL_EXE = "/usr/bin/clustalo"
 
 
 # ===========================
@@ -381,6 +386,62 @@ def run_osakt2_msa(
 
     return str(aln_path), str(view_csv), str(cand_csv)
 
+
+def run_osakt2_msa_wsl(fasta_path_win: str) -> Tuple[str, str, str]:
+    """
+    在 WSL 里用 Clustal-Omega 对 fasta_path_win 对应的多序列做比对，
+    然后在 Windows 里用 msa_osakt2_tool 导出：
+      1) XXX_OsAKT2.aln
+      2) alignment_osakt2_view.csv
+      3) candidate_sites_auto_v0.1.csv
+
+    返回值（三个 Windows 路径，全是 str）：
+        (aln_path_win, view_csv_win, cand_csv_win)
+    """
+
+    fasta_path = Path((fasta_path_win or "").strip().strip('"').strip("'"))
+    if not fasta_path.is_file():
+        raise FileNotFoundError(f"找不到 FASTA 文件：{fasta_path}")
+
+    base_dir_win = str(fasta_path.parent)
+    fasta_name = fasta_path.name
+    stem = fasta_path.stem
+    aln_name = f"{stem}_OsAKT2.aln"
+
+    base_dir_wsl = hole_win_to_wsl(base_dir_win)
+    exe = (CLUSTALO_WSL_EXE or "clustalo").strip()
+
+    inner_cmd = (
+        f'cd "{base_dir_wsl}" && '
+        f'"{exe}" -i "{fasta_name}" -o "{aln_name}" '
+        f"--outfmt=clu --force"
+    )
+
+    full_cmd = ["wsl", "bash", "-lc", inner_cmd]
+    result = subprocess.run(
+        full_cmd,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            "Clustal-Omega(WLS) 运行失败，请检查 CLUSTALO_WSL_EXE 或 WSL 配置：\n"
+            f"命令: {' '.join(full_cmd)}\n\n"
+            f"STDOUT:\n{result.stdout}\n\nSTDERR:\n{result.stderr}"
+        )
+
+    aln_path_win = str(fasta_path.with_name(aln_name))
+    out_dir = fasta_path.parent
+
+    from msa_osakt2_tool import export_alignment_view, suggest_candidates
+
+    view_csv = out_dir / "alignment_osakt2_view.csv"
+    cand_csv = out_dir / "candidate_sites_auto_v0.1.csv"
+
+    export_alignment_view(Path(aln_path_win), view_csv)
+    suggest_candidates(Path(aln_path_win), cand_csv)
+
+    return aln_path_win, str(view_csv), str(cand_csv)
 def _extract_plddt_from_pdb(pdb_path: Path):
     """返回该 pdb 的逐残基 pLDDT 列表：[{chain, resi, resn, plddt}, ...]"""
 
