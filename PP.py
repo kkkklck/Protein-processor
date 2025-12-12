@@ -5,6 +5,7 @@ from pathlib import Path
 import os, re, glob
 import shutil
 import subprocess
+import numpy as _np
 
 try:
     import pandas as _pd
@@ -286,9 +287,39 @@ def _score_class(total_score: float) -> str:
         return "similar_to_WT"
     return "worse_than_WT"
 
-def score_metrics_file(csv_path: str, wt_name: str = "WT", pdb_dir: str | None = None) -> str:
+def _fit_weights(df: _pd.DataFrame, standards_csv: str) -> Tuple[float, float, float]:
+    standards = _pd.read_csv(standards_csv)
+    if "Model" not in standards.columns or "y" not in standards.columns:
+        raise ValueError("standards.csv 需要包含 'Model' 和 'y' 两列。")
+
+    merged = df.merge(standards[["Model", "y"]], on="Model", how="inner")
+    if merged.empty:
+        raise ValueError("standards.csv 与 metrics_all.csv 没有重叠的 Model，无法拟合。")
+
+    X = _np.c_[
+        merged["GateTightScore"].to_numpy(),
+        merged["HydroScore"].to_numpy(),
+        _np.ones(len(merged)),
+    ]
+    y = merged["y"].to_numpy()
+
+    w1, w2, b = _np.linalg.lstsq(X, y, rcond=None)[0]
+    scale = abs(w1) + abs(w2)
+    if scale:
+        w1, w2 = w1 / scale, w2 / scale
+    return float(w1), float(w2), float(b)
+
+
+def score_metrics_file(
+    csv_path: str,
+    wt_name: str = "WT",
+    pdb_dir: str | None = None,
+    standards_csv: str | None = None,
+    default_weights: Tuple[float, float, float] = (0.7, 0.3, 0.0),
+) -> str:
     """
     读 metrics_all.csv，按 WT 计算 GateTightScore / TotalScore / ScoreClass，
+    若提供 standards_csv 则对 GateTightScore/HydroScore 做线性拟合得到权重；
     若提供 pdb_dir 且安装了 Biopython，则顺带拼上 pLDDT 置信度。
     返回最终写出的 metrics_scored.csv 路径。
     """
@@ -316,22 +347,33 @@ def score_metrics_file(csv_path: str, wt_name: str = "WT", pdb_dir: str | None =
     s0 = wt["SASA_residue"]
     h0 = wt["HBonds"] if wt["HBonds"] != 0 else 1.0
 
-    def _safe_div(base: float, value: float) -> float:
-        return (base - value) / base if base not in (0, None) else 0.0
+    def _rel_delta(base: float, value: float) -> float:
+        return (value - base) / base if base not in (0, None) else 0.0
 
     df["d_rmin_vs_WT"] = df["r_min_A"] - r0
     df["d_gateL_vs_WT"] = df["gate_length_A"] - L0
     df["d_SASAres_vs_WT"] = df["SASA_residue"] - s0
     df["d_HBonds_vs_WT"] = df["HBonds"] - h0
 
-    df["GateTightScore"] = df.apply(
-        lambda row: _safe_div(r0, row["r_min_A"]) + _safe_div(L0, row["gate_length_A"]), axis=1
-    )
-    df["HydroScore"] = df.apply(
-        lambda row: _safe_div(s0, row["SASA_residue"]) + (row["HBonds"] - h0) / h0,
-        axis=1,
-    )
-    df["TotalScore"] = df["GateTightScore"] + df["HydroScore"]
+    def _gate_score(row: _pd.Series) -> float:
+        delta_r = _rel_delta(r0, row["r_min_A"])
+        delta_L = _rel_delta(L0, row["gate_length_A"])
+        return (-delta_r) + 0.5 * delta_L
+
+    def _hydro_score(row: _pd.Series) -> float:
+        delta_s = _rel_delta(s0, row["SASA_residue"])
+        delta_h = _rel_delta(h0, row["HBonds"])
+        return (-0.5 * delta_s) + 0.5 * delta_h
+
+    df["GateTightScore"] = df.apply(_gate_score, axis=1)
+    df["HydroScore"] = df.apply(_hydro_score, axis=1)
+
+    if standards_csv:
+        w_gate, w_hydro, bias = _fit_weights(df, standards_csv)
+    else:
+        w_gate, w_hydro, bias = default_weights
+
+    df["TotalScore"] = df["GateTightScore"] * w_gate + df["HydroScore"] * w_hydro + bias
     df["ScoreClass"] = df["TotalScore"].apply(_score_class)
 
     if pdb_dir and _PDBParser is not None:
@@ -345,7 +387,7 @@ def score_metrics_file(csv_path: str, wt_name: str = "WT", pdb_dir: str | None =
 def make_stage3_table(out_dir: str, pick_models: List[str] | None = None) -> str:
     """
     生成 Stage3 决策表模板：
-    - 读取 metrics_all.csv（若存在 metrics_scored*.csv 也一起并入新列）
+    - 读取 metrics_all.csv，并合并 metrics_scored.csv 中的新增列
     - 追加两列定性占位符：Patch_Electrostatics、Contacts_Qualitative
     - 若 gate_sites 图已生成，则填入对应的图片路径
     返回写出的 stage3_table.csv 路径。
@@ -367,14 +409,13 @@ def make_stage3_table(out_dir: str, pick_models: List[str] | None = None) -> str
     if pick_models:
         pick_models = [m for m in pick_models if m in df["Model"].astype(str).tolist()]
 
-    for scored_path in sorted(glob.glob(os.path.join(out_dir, "metrics_scored*.csv"))):
+    scored_path = os.path.join(out_dir, "metrics_scored.csv")
+    if os.path.isfile(scored_path):
         scored_df = _pd.read_csv(scored_path)
-        if "Model" not in scored_df.columns:
-            continue
-        new_cols = [c for c in scored_df.columns if c != "Model" and c not in df.columns]
-        if not new_cols:
-            continue
-        df = df.merge(scored_df[["Model", *new_cols]], on="Model", how="left")
+        if "Model" in scored_df.columns:
+            new_cols = [c for c in scored_df.columns if c != "Model" and c not in df.columns]
+            if new_cols:
+                df = df.merge(scored_df[["Model", *new_cols]], on="Model", how="left")
 
     if pick_models:
         df = df[df["Model"].isin(pick_models)]
