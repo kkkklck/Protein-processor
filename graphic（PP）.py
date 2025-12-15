@@ -3,6 +3,7 @@ import os
 import shutil
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
+from tkinter.scrolledtext import ScrolledText
 
 from PP import (
     build_axis_cxc,
@@ -25,6 +26,224 @@ from PP import (
 )
 
 
+_help_win = None
+
+
+def expected_outputs(ctx):
+    out = []
+    out_dir = ctx.get("out_dir") or "<输出目录>"
+    policy = ctx.get("policy")
+
+    if ctx.get("full_coulombic"):
+        out.append(
+            (
+                "研究-1 FULL静电势",
+                f"{out_dir}/WT/WT_coulombic.png",
+                "全蛋白静电势对比（看整体电荷格局）",
+            )
+        )
+        out.append(
+            (
+                "研究-1 FULL静电势",
+                f"{out_dir}/<MUT>/<MUT>_coulombic.png",
+                "突变体全蛋白静电势图",
+            )
+        )
+
+    if ctx.get("contacts"):
+        out.append(
+            (
+                "研究-2 接触图",
+                f"{out_dir}/WT/WT_contacts.png",
+                "≤4Å 接触网络（局部堆叠/挤压）",
+            )
+        )
+        out.append(
+            (
+                "研究-2 接触图",
+                f"{out_dir}/<MUT>/<MUT>_contacts.png",
+                "突变体接触差异",
+            )
+        )
+
+    if ctx.get("hbonds"):
+        if policy in ("Standard", "Full"):
+            out.append(
+                (
+                    "研究-3 氢键图",
+                    f"{out_dir}/WT/WT_hbonds.png",
+                    "氢键可视化（带距离）",
+                )
+            )
+        out.append(
+            (
+                "研究-3 氢键日志",
+                f"{out_dir}/WT/WT_hbonds.txt",
+                "氢键数量统计来源（后续汇总用）",
+            )
+        )
+        out.append(
+            (
+                "研究-3 氢键日志",
+                f"{out_dir}/<MUT>/<MUT>_hbonds.txt",
+                "突变体氢键日志",
+            )
+        )
+
+    if ctx.get("sasa"):
+        out.append(
+            (
+                "研究-4 SASA日志",
+                f"{out_dir}/WT/WT_sasa.html",
+                "每个目标残基的可及面积（后续汇总用）",
+            )
+        )
+        out.append(
+            (
+                "研究-4 SASA日志",
+                f"{out_dir}/<MUT>/<MUT>_sasa.html",
+                "突变体 SASA",
+            )
+        )
+
+    if ctx.get("sites_contacts"):
+        out.append(
+            (
+                "研究-5 ROI接触图",
+                f"{out_dir}/gate_sites/WT_sites_contacts.png",
+                "ROI 一眼对比局部接触",
+            )
+        )
+        out.append(
+            (
+                "研究-5 ROI接触图",
+                f"{out_dir}/gate_sites/<MUT>_sites_contacts.png",
+                "突变体 ROI 接触",
+            )
+        )
+    if ctx.get("sites_coulombic"):
+        out.append(
+            (
+                "研究-6 ROI静电势",
+                f"{out_dir}/gate_sites/WT_sites_coulombic.png",
+                "ROI 局部电势补丁",
+            )
+        )
+        out.append(
+            (
+                "研究-6 ROI静电势",
+                f"{out_dir}/gate_sites/<MUT>_sites_coulombic.png",
+                "突变体 ROI 电势",
+            )
+        )
+
+    out.append(
+        (
+            "汇总",
+            f"{out_dir}/tables/sasa_hbonds_summary.csv",
+            "HBonds + SASA 总表",
+        )
+    )
+    out.append(
+        ("汇总", f"{out_dir}/tables/sasa_per_residue.csv", "逐残基 SASA 明细")
+    )
+    out.append(
+        ("合并", f"{out_dir}/tables/metrics_all.csv", "HOLE + SASA 合并总表")
+    )
+    out.append(
+        (
+            "评分",
+            f"{out_dir}/tables/metrics_scored.csv",
+            "结构评分 + pLDDT（若可用）",
+        )
+    )
+    out.append(("阶段3", f"{out_dir}/tables/stage3_table.csv", "决策表模板（含图片路径列）"))
+
+    hole_dir = ctx.get("hole_dir") or "<HOLE目录>"
+    out.append(("HOLE汇总", f"{hole_dir}/hole_min_table.csv", "每个模型的 r_min/gate_length"))
+    out.append(("HOLE曲线", f"{hole_dir}/hole_profiles.png", "多模型孔径曲线对比"))
+    out.append(("HOLE柱状图", f"{hole_dir}/hole_r_min_bar.png", "r_min 柱状图"))
+    out.append(("HOLE柱状图", f"{hole_dir}/hole_gate_length_bar.png", "gate_length 柱状图"))
+
+    return out
+
+
+def build_outputs_tab(frame, ctx_getter):
+    top = tk.Frame(frame)
+    top.pack(fill="x")
+
+    tk.Label(top, text="按你当前勾选，预计会生成：").pack(side="left", padx=8, pady=6)
+    tk.Button(top, text="刷新", command=lambda: refresh()).pack(side="right", padx=8)
+
+    tree = ttk.Treeview(frame, columns=("type", "path", "use"), show="headings")
+    tree.heading("type", text="功能/模块")
+    tree.heading("path", text="输出文件（示例路径）")
+    tree.heading("use", text="用途")
+    tree.column("type", width=160, anchor="w")
+    tree.column("path", anchor="w")
+    tree.column("use", anchor="w")
+    tree.pack(fill="both", expand=True, padx=8, pady=8)
+
+    def refresh():
+        for item in tree.get_children():
+            tree.delete(item)
+        ctx = ctx_getter()
+        for typ, path, use in expected_outputs(ctx):
+            tree.insert("", "end", values=(typ, path, use))
+
+    refresh()
+
+
+def open_help_window(root, ctx_getter):
+    global _help_win
+    if _help_win is not None and _help_win.winfo_exists():
+        _help_win.lift()
+        return
+
+    win = tk.Toplevel(root)
+    _help_win = win
+    win.title("Help / 使用手册")
+    win.geometry("980x720")
+
+    nb = ttk.Notebook(win)
+    nb.pack(fill="both", expand=True)
+
+    tabs = {}
+    for key, title in [
+        ("quick", "快速上手"),
+        ("research", "研究模式"),
+        ("mutate", "突变模式"),
+        ("hole", "HOLE 模式"),
+        ("summary", "汇总&评分"),
+        ("msa", "MSA 候选位点"),
+        ("outputs", "输出速查（动态）"),
+        ("faq", "常见报错"),
+    ]:
+        frame = tk.Frame(nb)
+        nb.add(frame, text=title)
+        tabs[key] = frame
+
+    def add_text(tab_key, content):
+        t = ScrolledText(tabs[tab_key], wrap="word")
+        t.pack(fill="both", expand=True)
+        t.insert("1.0", content)
+        t.configure(state="disabled")
+        return t
+
+    add_text("quick", HELP_TEXT_QUICK)
+    add_text("research", HELP_TEXT_RESEARCH)
+    add_text("mutate", HELP_TEXT_MUTATE)
+    add_text("hole", HELP_TEXT_HOLE)
+    add_text("summary", HELP_TEXT_SUMMARY)
+    add_text("msa", HELP_TEXT_MSA)
+    add_text("faq", HELP_TEXT_FAQ)
+
+    build_outputs_tab(tabs["outputs"], ctx_getter)
+
+    win.bind("<F1>", lambda _e: win.lift())
+
+
+
 def create_gui():
     root = tk.Tk()
     root.title("ChimeraX .cxc 自动生成器（GUI 版）")
@@ -32,9 +251,24 @@ def create_gui():
     # 整体窗口稍微宽一点
     root.geometry("900x600")
 
+    topbar = tk.Frame(root)
+    topbar.pack(side="top", fill="x")
+
+    tk.Label(topbar, text="Protein Pipeline GUI", fg="#333").pack(side="left", padx=10, pady=6)
+
+    help_btn = tk.Button(
+        topbar,
+        text="Help",
+        command=lambda: open_help_window(root, ctx_getter),
+    )
+    help_btn.pack(side="right", padx=10, pady=6)
+
+    body = tk.Frame(root)
+    body.pack(side="top", fill="both", expand=True)
+
     # ===== 外层可滚动区域（大滚动条） =====
-    canvas = tk.Canvas(root, highlightthickness=0)
-    vbar = tk.Scrollbar(root, orient="vertical", command=canvas.yview)
+    canvas = tk.Canvas(body, highlightthickness=0)
+    vbar = tk.Scrollbar(body, orient="vertical", command=canvas.yview)
     canvas.configure(yscrollcommand=vbar.set)
 
     vbar.pack(side="right", fill="y")
@@ -1274,8 +1508,28 @@ def create_gui():
         width=18,
     ).pack(side="left", padx=8)
 
+    def ctx_getter():
+        return {
+            "mode": mode_var.get(),
+            "policy": policy_var.get(),
+            "full_coulombic": bool(full_var.get()),
+            "contacts": bool(contacts_var.get()),
+            "hbonds": bool(hbonds_var.get()),
+            "sasa": bool(sasa_var.get()),
+            "sites_contacts": bool(sites_contacts_var.get()),
+            "sites_coulombic": bool(sites_coulombic_var.get()),
+            "chain_id": chain_var.get().strip() or "A",
+            "residue_expr": residue_expr_var.get().strip(),
+            "roi_expr": roi_expr_var.get().strip(),
+            "out_dir": out_dir_var.get().strip(),
+            "hole_dir": hole_base_dir_var.get().strip(),
+            "hole_models": hole_models_var.get().strip(),
+        }
+
     # 默认展示研究模式
     update_mode()
+
+    root.bind("<F1>", lambda _e: open_help_window(root, ctx_getter))
 
     return root
 
@@ -1300,6 +1554,264 @@ class ScrollableFrame(tk.Frame):
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
 
+
+
+if __name__ == "__main__":
+    app = create_gui()
+    app.mainloop()
+HELP_TEXT_QUICK = """
+【快速上手｜3 分钟把流程跑通】
+
+你这软件干的事一句话：用最少的手动操作，把“突变体结构 → 可视化证据 → 量化指标 → 决策表”串成一条流水线。
+
+0. 你需要准备什么？
+- WT PDB（必须）
+- 突变体 PDB（研究模式可选；突变模式可自动生成）
+- 已装 ChimeraX（用于 runscript）
+- 若用 HOLE / MSA：Windows + WSL 环境可用（HOLE/Clustal-Omega 在 WSL）
+
+1. 最推荐的入门玩法（ROI 一眼流）
+- 模式：研究
+- 预设：只要ROI（推荐）
+- 填：链 ID（默认 A）+ ROI 残基表达式（例如 283,286,291,298-300）
+- 点：生成 .cxc
+- 去 ChimeraX：runscript 你生成的 .cxc
+- 你会得到：
+  out_dir/gate_sites/WT_sites_contacts.png
+  out_dir/gate_sites/WT_sites_coulombic.png
+  以及每个突变体对应的两张 ROI 对比图
+
+2. 进阶玩法（门闩分析：图 + 氢键 + SASA）
+- 预设：门闩分析
+- 还需要填：目标残基表达式（例如 298-300）
+- 输出会多：
+  <Model>_contacts.png（≤4Å 接触）
+  <Model>_hbonds.txt（氢键统计用）
+  <Model>_sasa.html（SASA 统计用）
+
+3. 全量玩法（再加 FULL 静电势 + 汇总评分）
+- 预设：全量出图
+- 跑完 ChimeraX 后，到【汇总&评分】页：
+  (1) 汇总 SASA / H-bonds
+  (2) 先在 HOLE 模式做完孔径，再点 合并 HOLE + SASA 指标
+  (3) 生成决策表模板（stage3_table.csv）
+
+提示：你看到的每一个输出文件，都不是“摆设”，都是后续汇总/评分/写报告的证据链上的一环。
+"""
+
+HELP_TEXT_RESEARCH = """
+【研究模式｜把结构证据“图像化 + 可统计化”】【你生成的是 .cxc，真正跑图要去 ChimeraX 执行 runscript】
+
+A. 你要填的输入（对应 UI）
+1) WT PDB：必须
+2) 突变体 PDB：可选（多条）；标签会直接变成输出文件名的一部分
+3) 链 ID：默认 A（必须与你 PDB 里链一致）
+4) 目标残基表达式（用于 2/3/4）：
+   - 格式支持：298,299,300 或 298-305（不要乱加空格更稳）
+5) ROI 残基表达式（用于 5/6）：
+   - 例：283,286,291,298-300 或 45-60,120,155-170
+
+B. 六个功能按钮：勾哪个吐哪个（输出=证据）
+【1. FULL 静电势图】
+- 做什么：对整蛋白画 surface + coulombic（range -10~10）
+- 输出：
+  out_dir/WT/WT_coulombic.png
+  out_dir/<MUT>/<MUT>_coulombic.png
+- 有什么用：看“整体电荷地形”有没有被突变重塑（远端位点也可能牵一发而动全身）
+
+【2. 近景接触图（≤4 Å）】
+- 前提：必须填“目标残基表达式”
+- 做什么：以 WT 目标残基为视角基准，逐模型画 contacts（≤4Å）
+- 输出：
+  out_dir/<Model>/<Model>_contacts.png
+- 有什么用：看门闩附近是不是更拥挤/更松；谁在贴近、谁在退场
+
+【3. 近景氢键图 + 文本日志】
+- 前提：必须填“目标残基表达式”
+- 输出（重要：txt 是后续统计来源）：
+  out_dir/<Model>/<Model>_hbonds.txt   ← 汇总会用它计数
+  out_dir/<Model>/<Model>_hbonds.png   ← 仅 Standard/Full 会保存图；Minimal 不保存图
+- 有什么用：氢键数量/对象变化，常常就是“门到底被谁拽住了”的直接线索
+
+【4. 目标残基 SASA】
+- 前提：必须填“目标残基表达式”
+- 输出：
+  out_dir/<Model>/<Model>_sasa.html    ← 汇总会解析它，得到每个残基 area
+- 有什么用：暴露/埋藏的变化＝微环境改变；结合接触/氢键能解释“为什么它变了”
+
+【5. ROI 局部接触图（自定义）】
+- 前提：必须填 ROI 表达式
+- 输出（全部集中在 gate_sites，方便一眼横向对比）：
+  out_dir/gate_sites/<Model>_sites_contacts.png
+- 有什么用：给你“肉眼判读位点”服务，适合做 stage3 的定性列
+
+【6. ROI 局部静电势图（自定义）】
+- 前提：必须填 ROI 表达式
+- 输出：
+  out_dir/gate_sites/<Model>_sites_coulombic.png
+- 有什么用：局部电势补丁（patch）对比，适合解释离子/水化环境倾向变化（但别过度因果化）
+
+C. 输出等级（Minimal / Standard / Full）
+- Minimal：不保存 hbonds.png；且在你做“汇总”后会把非核心产物归档（保留 tables/ 和 gate_sites/）
+- Standard：常规全留
+- Full：目前与 Standard 基本一致（未来可扩展更多中间产物保留）
+"""
+
+HELP_TEXT_MUTATE = """
+【突变模式（swapaa）｜用 WT 一键造突变体 PDB】
+
+你在这里生成的也是 .cxc，需要去 ChimeraX runscript 才会真正生成突变体 PDB。
+
+A. 输入怎么填
+- 标签：决定输出文件名（比如 DMI、E174A）
+- 链：默认 A；也支持多个链，用逗号/空格分隔（数量要匹配残基号数量，或者只填一个）
+- 残基号：支持多个（例如 298,299,300）
+- 改成：支持一字母或三字母（N 或 ASN 都行）
+
+B. 输出会生成在哪
+- 你点“生成突变脚本”后，先生成：
+  out_dir/MUT/<Label>.cxc
+- 你在 ChimeraX 里 runscript 后，才会生成：
+  out_dir/MUT/<Label>.pdb
+
+C. 常见坑
+- 链 ID 不存在：swapaa 会直接报错
+- 残基编号对不上：你的 PDB 编号如果和预期偏移，突变会落空
+- 氨基酸写法：一字母必须是标准 20 个之一；三字母建议全大写（ASN/ASP…）
+"""
+
+HELP_TEXT_HOLE = """
+【HOLE 模式｜把“孔径”从感觉变成数字】
+
+HOLE 干的事：沿着你给定的轴（cpoint/cvect）采样通道半径，得到孔径曲线 r(s)。
+
+A. 推荐标准流程
+1) 设置 HOLE 工作目录（例：D:\\demo\\hole）
+2) 模型列表（逗号分隔）：WT,DMI,DMT,GT,ND
+3) 点【从 WT+突变体准备 HOLE PDB】
+   - 会在 HOLE 目录生成：WT.pdb、DMI.pdb…
+
+4) 轴怎么来（强烈建议用“自动推荐轴”）
+- 填：链 ID + 找轴残基表达式（例：298-300）
+- 点：生成找轴 .cxc
+- 去 ChimeraX：runscript axis_axis.cxc
+- 回来点：从 axis log 填入 cpoint/cvect
+
+5) 点【执行 HOLE 管道】
+- 每个模型会创建子目录：
+  <HOLE目录>/<Model>-HOLE/
+  里面至少会有：
+  <Model>_hole.inp
+  <Model>.pdb
+- 如果勾选“自动在 WSL 调用 HOLE”，还会生成：
+  <Model>_hole.log
+  <Model>_hole_spheres.pdb
+  <Model>_hole_profile.pdb
+
+6) 如果勾选“根据 log 生成 CSV & 曲线图”，在 HOLE 目录会额外生成：
+  hole_profile_samples.csv   （每个点的 s,r 数据）
+  hole_min_table.csv         （每模型的 r_min、gate_length 等）
+  hole_min_summary.csv       （人类可读摘要）
+  hole_profiles.png          （多模型孔径曲线）
+
+B. 关键指标怎么理解（别玄学）
+- r_min_A：孔径曲线的最小半径（Å），越小＝越“卡脖子”
+- gate_length_A：半径低于阈值(默认 1.4Å)的最长连续区段长度（Å）
+  这更像“卡脖子持续了多长一段”
+
+C. HOLE 运行依赖（你电脑要配一次）
+- `PP.py` 里：
+  HOLE_WSL_CONDA_INIT = ".../etc/profile.d/conda.sh"
+  HOLE_WSL_CONDA_ENV  = "hole_env"
+  HOLE_WSL_EXE        = "hole"
+- 不想自动？把“HOLE 命令”填成你自己的完整命令也行（高级玩法）
+"""
+
+HELP_TEXT_SUMMARY = """
+【汇总&评分｜把图变表，把表变判断】
+
+你在 ChimeraX 跑完 .cxc 之后，才来这里点按钮。
+
+A. 汇总 SASA / H-bonds（必须先有 *_sasa.html 和 *_hbonds.txt）
+- 输入：研究模式输出目录 out_dir
+- 扫描：递归找
+  *_sasa.html
+  *_hbonds.txt
+- 输出（在 out_dir/tables/）：
+  sasa_hbonds_summary.csv   （每模型：HBonds + Total_SASA + 每残基 SASA_xxx）
+  sasa_per_residue.csv      （长表：每模型-每残基一行）
+
+B. 合并 HOLE + SASA 指标（必须先有 HOLE 的 hole_min_table.csv）
+- 输入：
+  hole_dir：HOLE 工作目录（包含 hole_min_table.csv）
+-  sasa_dir：研究输出目录（包含 tables/sasa_hbonds_summary.csv）
+- 输出：
+  out_dir/tables/metrics_all.csv
+  out_dir/tables/metrics_scored.csv
+
+C. 评分到底怎么算的（透明，不神秘）
+程序会以 WT 为基准算相对变化：
+- GateTightScore：由 r_min 和 gate_length 组合出的“门紧程度”指标（相对 WT）
+- HydroScore：由 SASA_residue 和 HBonds 组合出的“极性/氢键环境”指标（相对 WT）
+- TotalScore = w_gate*GateTightScore + w_hydro*HydroScore + bias
+  - 默认权重：0.7 / 0.3 / 0.0
+  - 若你启用“标准集拟合”，并提供 ≥3 个标准点 (Model,y)，会用线性拟合自动学权重
+
+注意：TotalScore 只是“结构指标的综合分”，不等同电生理功能结论。
+正确姿势：用它排序 + 用图解释 + 用实验收尾。
+
+D. 生成决策表模板 stage3_table.csv
+- 输出：out_dir/tables/stage3_table.csv
+- 会额外给你两列留空：
+  Patch_Electrostatics（看 ROI 电势图手填）
+  Contacts_Qualitative（看 ROI 接触图手填）
+- 还会自动写入：
+  sites_contacts_img / sites_coulombic_img（图片路径，方便你整理报告）
+"""
+
+HELP_TEXT_MSA = """
+【MSA 候选位点｜用 Clustal-Omega + 小工具自动给“候选突变位点”】【WSL 跑比对，Windows 做后处理】
+
+A. 你要准备
+- 一个多序列 FASTA（建议同源家族，含 OsAKT2）
+- WSL 里可用 clustalo（你代码里默认 /usr/bin/clustalo）
+
+B. 你点“一键跑 MSA + 自动候选”后，会得到
+（输出在 FASTA 同目录）
+- <stem>_OsAKT2.aln
+- alignment_osakt2_view.csv
+- candidate_sites_auto_v0.1.csv
+
+C. 这些东西怎么用
+- view.csv：更适合人看（比对可视化表）
+- candidate_sites_auto_v0.1.csv：自动筛出来的候选位点（你再人工筛一遍更靠谱）
+"""
+
+HELP_TEXT_FAQ = """
+【常见报错&排坑（你踩过的坑，我都给你写成路标）】
+
+1) swapaa 报错：找不到残基/链
+- 99% 是链 ID 不对，或 PDB 编号和你以为的不一样
+- 建议先在 ChimeraX 里手动 select #1/A:298 看看是否选得中
+
+2) 研究模式生成 .cxc 成功，但 ChimeraX 跑完没输出图
+- 检查 out_dir 是否有写权限
+- 路径里尽量别用奇怪符号；Windows 反斜杠会被自动换成 /
+
+3) 汇总时报 “没找到 *_sasa.html 或 *_hbonds.txt”
+- 你可能只跑了 ROI（5/6），那确实不会产生 sasa/hbonds 文件
+- 或者你还没去 ChimeraX runscript（只生成了 .cxc 不算跑完）
+
+4) HOLE 自动运行失败
+- 先在 WSL 里确认：
+  hole 是否能直接运行
+  conda 环境名是否一致
+- 再检查 PP.py 里的 HOLE_WSL_CONDA_INIT / HOLE_WSL_CONDA_ENV
+
+5) MSA 失败：Clustal-Omega 找不到
+- 你这版默认是 /usr/bin/clustalo
+- 如果换机器，改 PP.py 里的 CLUSTALO_WSL_EXE
+"""
 
 
 if __name__ == "__main__":
