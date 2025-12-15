@@ -865,6 +865,20 @@ def create_gui():
 
     tk.Button(btn_frame, text="生成 .cxc", command=on_generate, width=15).pack(side="left")
 
+    standards_csv_var = tk.StringVar()
+
+    def browse_standards_csv():
+        path = filedialog.askopenfilename(
+            title="选择 standards.csv（包含 Model,y）",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
+        )
+        if path:
+            standards_csv_var.set(path)
+
+    tk.Label(btn_frame, text="标准集CSV：").pack(side="left", padx=(20, 4))
+    tk.Entry(btn_frame, textvariable=standards_csv_var, width=40).pack(side="left")
+    tk.Button(btn_frame, text="浏览", command=browse_standards_csv).pack(side="left", padx=6)
+
     def on_summarize_sasa_hbonds():
         out_dir = out_dir_var.get().strip()
         if not out_dir:
@@ -922,6 +936,8 @@ def create_gui():
 
         metrics_all = os.path.join(sasa_dir, "metrics_all.csv")
 
+        std_csv = standards_csv_var.get().strip() or None
+
         try:
             merge_all_metrics(hole_dir=hole_dir, sasa_dir=sasa_dir, out_csv=metrics_all)
         except Exception as e:
@@ -929,7 +945,12 @@ def create_gui():
             return
 
         try:
-            scored_path = score_metrics_file(metrics_all, wt_name="WT", pdb_dir=hole_dir)
+            scored_path = score_metrics_file(
+                metrics_all,
+                wt_name="WT",
+                pdb_dir=hole_dir,
+                standards_csv=std_csv,
+            )
         except Exception as e:
             messagebox.showerror("评分失败", f"score_metrics 出错：\n{e}")
             return
