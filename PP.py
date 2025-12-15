@@ -5,6 +5,7 @@ from pathlib import Path
 import os, re, glob
 import shutil
 import subprocess
+import math
 import numpy as _np
 
 try:
@@ -281,6 +282,8 @@ def merge_all_metrics(hole_dir: str, sasa_dir: str, out_csv: str) -> None:
     df.to_csv(out_csv, index=False)
 
 def _score_class(total_score: float) -> str:
+    if total_score is None or (isinstance(total_score, float) and math.isnan(total_score)):
+        return "unknown"
     if total_score >= 1.0:
         return "better_than_WT"
     if total_score >= 0.0:
@@ -374,6 +377,11 @@ def score_metrics_file(
         w_gate, w_hydro, bias = default_weights
 
     df["TotalScore"] = df["GateTightScore"] * w_gate + df["HydroScore"] * w_hydro + bias
+    wt_total_series = df.loc[df["Model"] == wt_name, "TotalScore"]
+    if not wt_total_series.empty:
+        wt_total = wt_total_series.iloc[0]
+        if not _pd.isna(wt_total):
+            df["TotalScore"] = df["TotalScore"] - wt_total
     df["ScoreClass"] = df["TotalScore"].apply(_score_class)
 
     if pdb_dir and _PDBParser is not None:
