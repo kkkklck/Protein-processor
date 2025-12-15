@@ -8,6 +8,8 @@ import subprocess
 import math
 import numpy as _np
 
+OUTPUT_POLICIES = ("Minimal", "Standard", "Full")
+
 try:
     import pandas as _pd
     import matplotlib.pyplot as _plt
@@ -59,6 +61,101 @@ HOLE_WSL_EXE = "hole"  # env 里 HOLE 的命令名
 # 如果以后换机器，只需要改这里。
 CLUSTALO_WSL_EXE = "/usr/bin/clustalo"
 
+
+def _tables_dir(out_dir: str) -> str:
+    path = os.path.join(out_dir, "tables")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def table_path(out_dir: str, filename: str) -> str:
+    """Return a table path under tables/ (creating the directory)."""
+
+    return os.path.join(_tables_dir(out_dir), filename)
+
+
+def find_table(out_dir: str, filename: str) -> str:
+    """Find a CSV either under tables/ or directly in out_dir."""
+
+    tables_candidate = os.path.join(out_dir, "tables", filename)
+    if os.path.exists(tables_candidate):
+        return tables_candidate
+    legacy_candidate = os.path.join(out_dir, filename)
+    return legacy_candidate
+
+
+def _model_dir(out_dir: str, label: str) -> str:
+    path = os.path.join(out_dir, label)
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def _is_better(src: str, dst: str) -> bool:
+    """Heuristic: prefer newer or larger files."""
+
+    try:
+        src_stat = os.stat(src)
+        dst_stat = os.stat(dst)
+    except OSError:
+        return True
+
+    if src_stat.st_mtime != dst_stat.st_mtime:
+        return src_stat.st_mtime > dst_stat.st_mtime
+    return src_stat.st_size >= dst_stat.st_size
+
+
+def organize_outputs(out_dir: str, labels: List[str], policy: str = "Standard") -> None:
+    """Move legacy scattered files into per-model folders and deduplicate."""
+
+    out_dir = (out_dir or "").strip()
+    if not out_dir:
+        return
+
+    trash = os.path.join(out_dir, "_trash")
+    os.makedirs(trash, exist_ok=True)
+
+    for name in os.listdir(out_dir):
+        src = os.path.join(out_dir, name)
+        if not os.path.isfile(src):
+            continue
+
+        for label in labels:
+            prefix = f"{label}_"
+            if not name.startswith(prefix):
+                continue
+
+            dst_dir = _model_dir(out_dir, label)
+            dst = os.path.join(dst_dir, name)
+
+            if os.path.exists(dst):
+                if _is_better(src, dst):
+                    os.replace(src, dst)
+                else:
+                    os.replace(src, os.path.join(trash, name))
+            else:
+                os.replace(src, dst)
+            break
+
+
+def cleanup_minimal(out_dir: str, labels: List[str]) -> None:
+    """Archive non-essential artifacts when Minimal output policy is selected."""
+
+    archive = os.path.join(out_dir, "_archive")
+    os.makedirs(archive, exist_ok=True)
+
+    keep_dirs = {"gate_sites", "tables"}
+    for entry in os.listdir(out_dir):
+        if entry in keep_dirs or entry.startswith("."):
+            continue
+        path = os.path.join(out_dir, entry)
+        if os.path.isdir(path) and entry in labels:
+            shutil.move(path, os.path.join(archive, entry))
+        elif os.path.isdir(path) and entry in {"_trash", "_archive"}:
+            continue
+        elif os.path.isdir(path):
+            shutil.move(path, os.path.join(archive, entry))
+        elif os.path.isfile(path):
+            shutil.move(path, os.path.join(archive, entry))
 
 # ===========================
 # HOLE 管道相关工具函数
@@ -267,8 +364,8 @@ def merge_all_metrics(hole_dir: str, sasa_dir: str, out_csv: str) -> None:
     if _pd is None:
         raise RuntimeError("需要安装 pandas 才能合并 CSV。")
 
-    hole_csv = os.path.join(hole_dir, "hole_min_table.csv")
-    sasa_csv = os.path.join(sasa_dir, "sasa_hbonds_summary.csv")
+    hole_csv = find_table(hole_dir, "hole_min_table.csv")
+    sasa_csv = find_table(sasa_dir, "sasa_hbonds_summary.csv")
 
     if not os.path.exists(hole_csv):
         raise FileNotFoundError(f"未找到 HOLE 结果：{hole_csv}")
@@ -414,7 +511,7 @@ def make_stage3_table(out_dir: str, pick_models: List[str] | None = None) -> str
     if not out_dir:
         raise ValueError("out_dir 不能为空")
 
-    metrics_all = os.path.join(out_dir, "metrics_all.csv")
+    metrics_all = find_table(out_dir, "metrics_all.csv")
     if not os.path.isfile(metrics_all):
         raise FileNotFoundError(f"找不到 metrics_all.csv：{metrics_all}")
 
@@ -423,7 +520,7 @@ def make_stage3_table(out_dir: str, pick_models: List[str] | None = None) -> str
     if pick_models:
         pick_models = [m for m in pick_models if m in df["Model"].astype(str).tolist()]
 
-    scored_path = os.path.join(out_dir, "metrics_scored.csv")
+    scored_path = find_table(out_dir, "metrics_scored.csv")
     if os.path.isfile(scored_path):
         scored_df = _pd.read_csv(scored_path)
         if "Model" in scored_df.columns:
@@ -449,8 +546,8 @@ def make_stage3_table(out_dir: str, pick_models: List[str] | None = None) -> str
     df["sites_contacts_img"] = df["Model"].apply(lambda m: _img_path(str(m), "sites_contacts"))
     df["sites_coulombic_img"] = df["Model"].apply(lambda m: _img_path(str(m), "sites_coulombic"))
 
-    os.makedirs(out_dir, exist_ok=True)
-    out_path = os.path.join(out_dir, "stage3_table.csv")
+    os.makedirs(_tables_dir(out_dir), exist_ok=True)
+    out_path = table_path(out_dir, "stage3_table.csv")
     df.to_csv(out_path, index=False, encoding="utf-8-sig")
     return out_path
 
@@ -976,6 +1073,7 @@ def build_cxc_script(
     residue_expr: str,
     out_dir: str,
     features: Dict[str, bool],
+    policy: str = "Standard",
     roi_expr: Optional[str] = None,
     roi_view_name: str = "ROI",
 ) -> str:
@@ -1052,6 +1150,9 @@ def build_cxc_script(
     add("lighting soft")
     add("")
 
+    def _cx_dir(label: str) -> str:
+        return normalize_path_for_chimerax(_model_dir(out_dir, label))
+
     # FULL 静电势
     if features.get("full_coulombic"):
         add("# ===================== FULL 视角 + 静电势 =====================")
@@ -1061,7 +1162,7 @@ def build_cxc_script(
         add("show #%d" % wt_id)
         add("surface #%d" % wt_id)
         add("coulombic #%d range -10,10" % wt_id)
-        add('save "%s/WT_coulombic.png" width 2200 supersample 3' % out_dir_cx)
+        add('save "%s/WT_coulombic.png" width 2200 supersample 3' % _cx_dir("WT"))
         add("")
         # 每个突变体
         for m in mutant_list:
@@ -1072,7 +1173,7 @@ def build_cxc_script(
             add("show #%d" % mid)
             add("surface #%d" % mid)
             add("coulombic #%d range -10,10" % mid)
-            add('save "%s/%s_coulombic.png" width 2200 supersample 3' % (out_dir_cx, label))
+            add('save "%s/%s_coulombic.png" width 2200 supersample 3' % (_cx_dir(label), label))
             add("")
 
     # 是否需要近景视角（局部分析）
@@ -1108,7 +1209,7 @@ def build_cxc_script(
             add("contacts sel distanceOnly 4 reveal true intermodel false")
             add("size #%d pseudobondradius 0.35" % mid)
             add("color yellow pseudobonds")
-            add('save "%s/%s_contacts.png" width 2200 supersample 3' % (out_dir_cx, label))
+            add('save "%s/%s_contacts.png" width 2200 supersample 3' % (_cx_dir(label), label))
             add("delete pseudobonds")
             add("")
 
@@ -1128,11 +1229,12 @@ def build_cxc_script(
             add("hbonds sel reveal true interModel false showDist true")
             add("size #%d pseudobondradius 0.35" % mid)
             add("color yellow pseudobonds")
-            add('save "%s/%s_hbonds.png" width 2200 supersample 3' % (out_dir_cx, label))
+            if policy in ("Standard", "Full"):
+                add('save "%s/%s_hbonds.png" width 2200 supersample 3' % (_cx_dir(label), label))
             add(
                 'hbonds #%d/%s:%s interModel false intraModel true '
                 'log true saveFile "%s/%s_hbonds.txt"'
-                % (mid, chain_id, residue_expr, out_dir_cx, label)
+                % (mid, chain_id, residue_expr, _cx_dir(label), label)
             )
             add("delete pseudobonds")
             add("")
@@ -1148,7 +1250,7 @@ def build_cxc_script(
             add("log clear")
             add("measure sasa #%d/%s:%s" % (mid, chain_id, residue_expr))
             add("info residues #%d/%s:%s attribute area" % (mid, chain_id, residue_expr))
-            add('log save "%s/%s_sasa.html" executableLinks false' % (out_dir_cx, label))
+            add('log save "%s/%s_sasa.html" executableLinks false' % (_cx_dir(label), label))
             add("")
 
     # ROI 局部批处理
@@ -1317,8 +1419,8 @@ def summarize_sasa_hbonds(out_dir: str) -> Tuple[str, str]:
 
     df_detail = _pd.DataFrame(detail_rows).sort_values(["Residue", "Model"])
 
-    summary_csv = os.path.join(out_dir, "sasa_hbonds_summary.csv")
-    detail_csv = os.path.join(out_dir, "sasa_per_residue.csv")
+    summary_csv = table_path(out_dir, "sasa_hbonds_summary.csv")
+    detail_csv = table_path(out_dir, "sasa_per_residue.csv")
 
     df_summary.to_csv(summary_csv, index=False)
     df_detail.to_csv(detail_csv, index=False)
