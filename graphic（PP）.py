@@ -192,8 +192,8 @@ def create_gui():
     contacts_var = tk.IntVar(value=1)
     hbonds_var = tk.IntVar(value=1)
     sasa_var = tk.IntVar(value=1)
-    sites_contacts_var = tk.IntVar(value=1)
-    sites_coulombic_var = tk.IntVar(value=1)
+    sites_contacts_var = tk.IntVar(value=0)
+    sites_coulombic_var = tk.IntVar(value=0)
 
     tk.Checkbutton(
         feature_frame, text="1. FULL 静电势图", variable=full_var
@@ -974,9 +974,6 @@ def create_gui():
         messagebox.showinfo("汇总完成", msg)
 
     def build_standards_csv_from_gui(sasa_dir: str) -> str | None:
-        if not fit_enabled_var.get():
-            return None
-
         points = []
         for r in standard_rows:
             if not r["use_var"].get():
@@ -1017,49 +1014,30 @@ def create_gui():
 
         metrics_all = os.path.join(sasa_dir, "metrics_all.csv")
 
-        std_csv = build_standards_csv_from_gui(sasa_dir)
-
         try:
             merge_all_metrics(hole_dir=hole_dir, sasa_dir=sasa_dir, out_csv=metrics_all)
         except Exception as e:
             messagebox.showerror("合并失败", f"merge_all_metrics 出错：\n{e}")
             return
 
-        std_used = std_csv
-        try:
-            scored_path = score_metrics_file(
-                metrics_all,
-                wt_name="WT",
-                pdb_dir=hole_dir,
-                standards_csv=std_used,
-            )
-        except Exception as e:
-            if std_used:
-                messagebox.showwarning(
-                    "拟合失败，已回退默认权重",
-                    f"标准集：{std_used}\n\n原因：{e}\n\n将使用默认权重继续评分。",
-                )
-                try:
-                    scored_path = score_metrics_file(
-                        metrics_all,
-                        wt_name="WT",
-                        pdb_dir=hole_dir,
-                        standards_csv=None,
-                    )
-                    std_used = None
-                except Exception as e2:
-                    messagebox.showerror("评分失败", f"回退默认权重仍失败：\n{e2}")
-                    return
-            else:
-                messagebox.showerror("评分失败", f"score_metrics 出错：\n{e}")
-                return
-        used = "GUI标准集（standards_gui.csv）" if std_used else "默认权重"
+        standards_csv = None
+        if fit_enabled_var.get() == 1:
+            standards_csv = build_standards_csv_from_gui(out_dir_var.get().strip())
 
+        scored_csv = score_metrics_file(
+            csv_path=metrics_all,
+            wt_name="WT",
+            pdb_dir=hole_dir,
+            standards_csv=standards_csv,
+            default_weights=(0.7, 0.3, 0.0),
+        )
+
+        used = "GUI标准集（standards_gui.csv）" if standards_csv else "默认权重"
         msg = (
             "已生成 HOLE + SASA 总表：\n"
             f"{metrics_all}\n\n"
             "并已写出结构评分 + 置信度表：\n"
-            f"{scored_path}\n\n"
+            f"{scored_csv}\n\n"
             "metrics_scored.csv 里包含：\n"
             "- r_min / gate_length / HBonds / SASA_residue\n"
             "- GateTightScore / TotalScore / ScoreClass\n"
