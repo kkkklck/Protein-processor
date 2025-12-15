@@ -329,14 +329,14 @@ def create_gui():
             )
             return
 
-        messagebox.showinfo(
-            "MSA 完成",
+        msg = (
             "多序列比对 + 自动候选筛选 已完成：\n\n"
             f"对齐文件：\n{aln_path}\n\n"
             f"可视化表：\n{view_csv}\n\n"
             f"候选位点（自动）：\n{cand_csv}\n\n"
-            "用 Excel 打开候选表，挑选你感兴趣的位点，再手动整理到 candidate_sites_v0.1.xlsx 即可。",
+            "用 Excel 打开候选表，挑选你感兴趣的位点，再手动整理到 candidate_sites_v0.1.xlsx 即可。"
         )
+        messagebox.showinfo("MSA 完成", msg)
 
     tk.Button(
         msa_frame,
@@ -475,12 +475,12 @@ def create_gui():
                 messagebox.showerror("复制失败", f"复制 {label} 时出错：\n{e}")
                 return
 
-        messagebox.showinfo(
-            "准备完成",
+        msg = (
             "已把 WT + 突变体 PDB 复制到 HOLE 工作目录：\n"
             f"{base_dir}\n\n"
             "文件名统一为：<模型名>.pdb。"
         )
+        messagebox.showinfo("准备完成", msg)
 
     tk.Button(
         hole_frame,
@@ -533,14 +533,14 @@ def create_gui():
             messagebox.showerror("生成失败", f"创建找轴脚本时出错：\n{e}")
             return
 
-        messagebox.showinfo(
-            "已生成找轴脚本",
+        msg = (
             "脚本路径：\n"
             f"{axis_cxc}\n\n"
             "接下来在 ChimeraX 中运行：\n"
             f"runscript {axis_cxc}\n\n"
             "跑完后会在 HOLE 目录生成 axis_axis.log。"
         )
+        messagebox.showinfo("已生成找轴脚本", msg)
 
     def on_fill_cpoint_from_axis_log():
         base_dir = hole_base_dir_var.get().strip()
@@ -568,11 +568,11 @@ def create_gui():
         hole_cvy_var.set("0.0")
         hole_cvz_var.set("1.0")
 
-        messagebox.showinfo(
-            "已填入推荐轴",
+        msg = (
             f"推荐 cpoint = ({x:.2f}, {y:.2f}, {z:.2f})\n"
             "cvect 已设为 (0.0, 0.0, 1.0)。"
         )
+        messagebox.showinfo("已填入推荐轴", msg)
 
     tk.Button(axis_frame, text="生成找轴 .cxc", command=on_generate_axis_cxc).grid(
         row=2, column=0, columnspan=2, sticky="w", pady=(6, 0)
@@ -638,12 +638,12 @@ def create_gui():
                 return
 
             preview = "\n".join(generated_paths)
-            messagebox.showinfo(
-                "完成",
+            msg = (
                 f"已生成 {len(generated_paths)} 个 swapaa 脚本：\n{preview}\n\n"
                 "在 ChimeraX 中执行：\n"
                 f"runscript {generated_paths[0]}"
             )
+            messagebox.showinfo("完成", msg)
             return
 
         if mode == "hole":
@@ -837,12 +837,12 @@ def create_gui():
             messagebox.showerror("写文件失败", f"无法写入 .cxc 文件：\n{e}")
             return
 
-        messagebox.showinfo(
-            "完成",
+        msg = (
             f"已生成 ChimeraX 脚本：\n{cxc_path}\n\n"
             "在 ChimeraX 命令行中执行：\n"
             f"runscript {cxc_path}"
         )
+        messagebox.showinfo("完成", msg)
 
     def on_plot_hole_metrics():
         base_dir = hole_base_dir_var.get().strip()
@@ -965,13 +965,13 @@ def create_gui():
                 except Exception:
                     continue
 
-        messagebox.showinfo(
-                "汇总完成",
-                "已生成：\n"
-                f"{summary_csv}\n"
-                f"{detail_csv}\n\n"
-                "可以用 Excel 打开做对比分析。"
+        msg = (
+            "已生成：\n"
+            f"{summary_csv}\n"
+            f"{detail_csv}\n\n"
+            "可以用 Excel 打开做对比分析。"
         )
+        messagebox.showinfo("汇总完成", msg)
 
     def build_standards_csv_from_gui(sasa_dir: str) -> str | None:
         if not fit_enabled_var.get():
@@ -1055,18 +1055,18 @@ def create_gui():
                 return
         used = "GUI标准集（standards_gui.csv）" if std_used else "默认权重"
 
-        messagebox.showinfo(
-            "合并 + 评分完成",
-            "已生成 HOLE + SASA 总表：\n",
-            f"{metrics_all}\n\n",
-            "并已写出结构评分 + 置信度表：\n",
-            f"{scored_path}\n\n",
-            "metrics_scored.csv 里包含：\n",
-            "- r_min / gate_length / HBonds / SASA_residue\n",
-            "- GateTightScore / TotalScore / ScoreClass\n",
-            "- pLDDT 均值 / 中位数 / 低-中-高残基数 + ConfidenceClass\n\n",
+        msg = (
+            "已生成 HOLE + SASA 总表：\n"
+            f"{metrics_all}\n\n"
+            "并已写出结构评分 + 置信度表：\n"
+            f"{scored_path}\n\n"
+            "metrics_scored.csv 里包含：\n"
+            "- r_min / gate_length / HBonds / SASA_residue\n"
+            "- GateTightScore / TotalScore / ScoreClass\n"
+            "- pLDDT 均值 / 中位数 / 低-中-高残基数 + ConfidenceClass\n\n"
             f"本次尺子来源：{used}"
         )
+        messagebox.showinfo("合并 + 评分完成", msg)
 
     def on_make_stage3_table():
         sasa_dir = out_dir_var.get().strip()
@@ -1081,12 +1081,12 @@ def create_gui():
             messagebox.showerror("生成失败", f"make_stage3_table 出错：\n{e}")
             return
 
-        messagebox.showinfo(
-            "决策表已生成",
+        msg = (
             "已生成决策表模板：\n"
             f"{table_path}\n\n"
-            "Patch_Electrostatics / Contacts_Qualitative 两列留空，方便看图填写。",
+            "Patch_Electrostatics / Contacts_Qualitative 两列留空，方便看图填写。"
         )
+        messagebox.showinfo("决策表已生成", msg)
 
     tk.Button(
             btn_frame,
