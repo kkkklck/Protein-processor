@@ -223,6 +223,9 @@ def open_help_window(root, ctx_getter):
         nb.add(frame, text=title)
         tabs[key] = frame
 
+    def safe_get(name, fallback="（该章节帮助文本未加载）"):
+        return globals().get(name, fallback)
+
     def add_text(tab_key, content):
         t = ScrolledText(tabs[tab_key], wrap="word")
         t.pack(fill="both", expand=True)
@@ -230,13 +233,13 @@ def open_help_window(root, ctx_getter):
         t.configure(state="disabled")
         return t
 
-    add_text("quick", HELP_TEXT_QUICK)
-    add_text("research", HELP_TEXT_RESEARCH)
-    add_text("mutate", HELP_TEXT_MUTATE)
-    add_text("hole", HELP_TEXT_HOLE)
-    add_text("summary", HELP_TEXT_SUMMARY)
-    add_text("msa", HELP_TEXT_MSA)
-    add_text("faq", HELP_TEXT_FAQ)
+    add_text("quick", safe_get("HELP_TEXT_QUICK"))
+    add_text("research", safe_get("HELP_TEXT_RESEARCH"))
+    add_text("mutate", safe_get("HELP_TEXT_MUTATE"))
+    add_text("hole", safe_get("HELP_TEXT_HOLE"))
+    add_text("summary", safe_get("HELP_TEXT_SUMMARY"))
+    add_text("msa", safe_get("HELP_TEXT_MSA"))
+    add_text("faq", safe_get("HELP_TEXT_FAQ"))
 
     build_outputs_tab(tabs["outputs"], ctx_getter)
 
@@ -1554,15 +1557,10 @@ class ScrollableFrame(tk.Frame):
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
 
-
-
-if __name__ == "__main__":
-    app = create_gui()
-    app.mainloop()
 HELP_TEXT_QUICK = """
 【快速上手｜3 分钟把流程跑通】
 
-你这软件干的事一句话：用最少的手动操作，把“突变体结构 → 可视化证据 → 量化指标 → 决策表”串成一条流水线。
+这软件干的事一句话：用最少的手动操作，把“突变体结构 → 可视化证据 → 量化指标 → 决策表”串成一条流水线。
 
 0. 你需要准备什么？
 - WT PDB（必须）
