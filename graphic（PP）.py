@@ -1,3 +1,4 @@
+import csv
 import os
 import shutil
 import tkinter as tk
@@ -865,19 +866,68 @@ def create_gui():
 
     tk.Button(btn_frame, text="生成 .cxc", command=on_generate, width=15).pack(side="left")
 
-    standards_csv_var = tk.StringVar()
+    fit_enabled_var = tk.BooleanVar(value=True)
+    standard_rows = []
 
-    def browse_standards_csv():
-        path = filedialog.askopenfilename(
-            title="选择 standards.csv（包含 Model,y）",
-            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
-        )
-        if path:
-            standards_csv_var.set(path)
+    fit_frame = tk.LabelFrame(research_container, text="尺子拟合（可选）")
+    fit_frame.pack(fill="x", padx=10, pady=(6, 8))
 
-    tk.Label(btn_frame, text="标准集CSV：").pack(side="left", padx=(20, 4))
-    tk.Entry(btn_frame, textvariable=standards_csv_var, width=40).pack(side="left")
-    tk.Button(btn_frame, text="浏览", command=browse_standards_csv).pack(side="left", padx=6)
+    tk.Checkbutton(
+        fit_frame,
+        text="启用标准集拟合（不勾选则默认权重）",
+        variable=fit_enabled_var,
+    ).pack(anchor="w")
+
+    rows_container = tk.Frame(fit_frame)
+    rows_container.pack(fill="x", pady=4)
+
+    def collect_models_from_gui():
+        models = ["WT"]
+        for row in mutant_rows:
+            label = (row["label_var"].get() or "").strip()
+            if label:
+                models.append(label)
+        seen = set()
+        uniq = []
+        for m in models:
+            if m not in seen:
+                seen.add(m)
+                uniq.append(m)
+        return uniq
+
+    def rebuild_standards_rows():
+        for w in rows_container.winfo_children():
+            w.destroy()
+        standard_rows.clear()
+
+        models = collect_models_from_gui()
+
+        tk.Label(rows_container, text="作为标准").grid(row=0, column=0, padx=6, sticky="w")
+        tk.Label(rows_container, text="Model").grid(row=0, column=1, padx=6, sticky="w")
+        tk.Label(
+            rows_container,
+            text="y（目标分，例：better=1/similar=0/worse=-1）",
+        ).grid(row=0, column=2, padx=6, sticky="w")
+
+        for i, m in enumerate(models, start=1):
+            use_var = tk.BooleanVar(value=(m == "WT"))
+            y_var = tk.StringVar(value=("0" if m == "WT" else ""))
+
+            tk.Checkbutton(rows_container, variable=use_var).grid(
+                row=i, column=0, padx=6, sticky="w"
+            )
+            tk.Label(rows_container, text=m).grid(row=i, column=1, padx=6, sticky="w")
+            tk.Entry(rows_container, textvariable=y_var, width=18).grid(
+                row=i, column=2, padx=6, sticky="w"
+            )
+
+            standard_rows.append({"model": m, "use_var": use_var, "y_var": y_var})
+
+    tk.Button(fit_frame, text="刷新模型列表", command=rebuild_standards_rows).pack(
+        anchor="w", pady=(4, 0)
+    )
+
+    rebuild_standards_rows()
 
     def on_summarize_sasa_hbonds():
         out_dir = out_dir_var.get().strip()
@@ -923,19 +973,35 @@ def create_gui():
                 "可以用 Excel 打开做对比分析。"
         )
 
-    def resolve_standards_csv(sasa_dir: str, manual_path: str | None) -> str | None:
-        candidates = []
-        if manual_path:
-            candidates.append(manual_path)
+    def build_standards_csv_from_gui(sasa_dir: str) -> str | None:
+        if not fit_enabled_var.get():
+            return None
 
-        candidates.append(os.path.join(sasa_dir, "standards.csv"))
-        candidates.append(os.path.join(sasa_dir, "standards_template.csv"))
+        points = []
+        for r in standard_rows:
+            if not r["use_var"].get():
+                continue
+            raw = (r["y_var"].get() or "").strip()
+            if raw == "":
+                continue
+            try:
+                y = float(raw)
+            except Exception:
+                continue
+            points.append((r["model"], y))
 
-        for p in candidates:
-            if p and os.path.isfile(p):
-                return os.path.abspath(p)
+        if len(points) < 3:
+            messagebox.showwarning("标准点不足", "用于拟合的标准点少于 3 个，本次将使用默认权重评分。")
+            return None
 
-        return None
+        os.makedirs(sasa_dir, exist_ok=True)
+        std_path = os.path.join(sasa_dir, "standards_gui.csv")
+        with open(std_path, "w", newline="", encoding="utf-8-sig") as f:
+            writer = csv.writer(f)
+            writer.writerow(["Model", "y"])
+            for model, y in points:
+                writer.writerow([model, y])
+        return std_path
 
 
     def on_merge_all_metrics():
@@ -951,8 +1017,7 @@ def create_gui():
 
         metrics_all = os.path.join(sasa_dir, "metrics_all.csv")
 
-        manual_std = standards_csv_var.get().strip() or None
-        std_csv = resolve_standards_csv(sasa_dir, manual_std)
+        std_csv = build_standards_csv_from_gui(sasa_dir)
 
         try:
             merge_all_metrics(hole_dir=hole_dir, sasa_dir=sasa_dir, out_csv=metrics_all)
@@ -960,18 +1025,19 @@ def create_gui():
             messagebox.showerror("合并失败", f"merge_all_metrics 出错：\n{e}")
             return
 
+        std_used = std_csv
         try:
             scored_path = score_metrics_file(
                 metrics_all,
                 wt_name="WT",
                 pdb_dir=hole_dir,
-                standards_csv=std_csv,
+                standards_csv=std_used,
             )
         except Exception as e:
-            if std_csv:
+            if std_used:
                 messagebox.showwarning(
-                    "标准集不可用，已回退默认权重",
-                    f"标准集：{std_csv}\n\n原因：{e}\n\n将使用默认权重继续评分。",
+                    "拟合失败，已回退默认权重",
+                    f"标准集：{std_used}\n\n原因：{e}\n\n将使用默认权重继续评分。",
                 )
                 try:
                     scored_path = score_metrics_file(
@@ -980,14 +1046,14 @@ def create_gui():
                         pdb_dir=hole_dir,
                         standards_csv=None,
                     )
+                    std_used = None
                 except Exception as e2:
                     messagebox.showerror("评分失败", f"回退默认权重仍失败：\n{e2}")
                     return
             else:
                 messagebox.showerror("评分失败", f"score_metrics 出错：\n{e}")
                 return
-
-        used = std_csv if std_csv else "未使用标准集（默认权重）"
+        used = "GUI标准集（standards_gui.csv）" if std_used else "默认权重"
 
         messagebox.showinfo(
             "合并 + 评分完成",
