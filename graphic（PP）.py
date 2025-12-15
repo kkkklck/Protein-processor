@@ -2,7 +2,7 @@ import csv
 import os
 import shutil
 import tkinter as tk
-from tkinter import filedialog, messagebox
+from tkinter import filedialog, messagebox, ttk
 
 from PP import (
     build_axis_cxc,
@@ -19,6 +19,9 @@ from PP import (
     score_metrics_file,
     make_stage3_table,
     run_osakt2_msa_wsl,
+    organize_outputs,
+    cleanup_minimal,
+    OUTPUT_POLICIES,
 )
 
 
@@ -83,6 +86,14 @@ def create_gui():
     research_container = tk.Frame(content)
     mutate_container = tk.Frame(content)
     hole_container = tk.Frame(content)
+    research_notebook = ttk.Notebook(research_container)
+    plot_tab = tk.Frame(research_notebook)
+    summary_tab = tk.Frame(research_notebook)
+    msa_tab = tk.Frame(research_notebook)
+    research_notebook.add(plot_tab, text="出图脚本")
+    research_notebook.add(summary_tab, text="汇总&评分")
+    research_notebook.add(msa_tab, text="MSA 候选位点")
+    research_notebook.pack(fill="both", expand=True)
 
     mode_var = tk.StringVar(value="research")  # "research" / "mutate" / "hole"
 
@@ -123,7 +134,7 @@ def create_gui():
     ).pack(side="left", padx=(4, 0))
 
     # ===== 研究模式：突变体区 =====
-    mutants_outer = tk.LabelFrame(research_container, text="突变体 PDB（可选，多条）", padx=8, pady=8)
+    mutants_outer = tk.LabelFrame(plot_tab, text="突变体 PDB（可选，多条）", padx=8, pady=8)
     mutants_outer.pack(fill="both", padx=10, pady=5, expand=True)
 
     scroll = ScrollableFrame(mutants_outer)
@@ -184,9 +195,30 @@ def create_gui():
         command=add_mutant_row
     ).pack(anchor="w", padx=10, pady=4)
 
-    # ===== 功能选择 =====
-    feature_frame = tk.LabelFrame(research_container, text="ChimeraX 自动化", padx=8, pady=8)
-    feature_frame.pack(fill="x", padx=10, pady=5)
+    # ===== 预设 / 输出等级 / 功能选择 =====
+    preset_bar = tk.Frame(plot_tab)
+    preset_bar.pack(fill="x", padx=10, pady=5)
+
+    preset_var = tk.StringVar(value="只要ROI（推荐）")
+    tk.Label(preset_bar, text="预设：").pack(side="left")
+    preset_box = ttk.Combobox(
+        preset_bar,
+        textvariable=preset_var,
+        values=["只要ROI（推荐）", "门闩分析", "全量出图"],
+        width=16,
+        state="readonly",
+    )
+    preset_box.pack(side="left")
+
+    tk.Label(preset_bar, text="输出等级：", padx=10).pack(side="left")
+    policy_var = tk.StringVar(value="Standard")
+    for pol in OUTPUT_POLICIES:
+        tk.Radiobutton(preset_bar, text=pol, value=pol, variable=policy_var).pack(side="left")
+
+    adv_var = tk.BooleanVar(value=False)
+    tk.Checkbutton(preset_bar, text="高级选项", variable=adv_var).pack(side="right")
+
+    feature_frame = tk.LabelFrame(plot_tab, text="ChimeraX 自动化", padx=8, pady=8)
 
     full_var = tk.IntVar(value=1)
     contacts_var = tk.IntVar(value=1)
@@ -194,6 +226,62 @@ def create_gui():
     sasa_var = tk.IntVar(value=1)
     sites_contacts_var = tk.IntVar(value=0)
     sites_coulombic_var = tk.IntVar(value=0)
+
+    def set_features(**kwargs):
+        mapping = {
+            "full_coulombic": full_var,
+            "contacts": contacts_var,
+            "hbonds": hbonds_var,
+            "sasa": sasa_var,
+            "sites_contacts": sites_contacts_var,
+            "sites_coulombic": sites_coulombic_var,
+        }
+        for key, var in mapping.items():
+            if key in kwargs:
+                var.set(1 if kwargs[key] else 0)
+
+    def apply_preset():
+        choice = preset_var.get()
+        if choice == "只要ROI（推荐）":
+            set_features(
+                sites_contacts=True,
+                sites_coulombic=True,
+                contacts=False,
+                hbonds=False,
+                sasa=False,
+                full_coulombic=False,
+            )
+        elif choice == "门闩分析":
+            set_features(
+                contacts=True,
+                hbonds=True,
+                sasa=True,
+                sites_contacts=True,
+                sites_coulombic=True,
+                full_coulombic=False,
+            )
+        elif choice == "全量出图":
+            set_features(
+                full_coulombic=True,
+                contacts=True,
+                hbonds=True,
+                sasa=True,
+                sites_contacts=True,
+                sites_coulombic=True,
+            )
+
+    preset_box.bind("<<ComboboxSelected>>", lambda _e: apply_preset())
+    apply_preset()
+
+    def _toggle_advanced(*_):
+        if adv_var.get():
+            if not feature_frame.winfo_manager():
+                feature_frame.pack(fill="x", padx=10, pady=5)
+        else:
+            feature_frame.pack_forget()
+
+    adv_var.trace_add("write", _toggle_advanced)
+    _toggle_advanced()
 
     tk.Checkbutton(
         feature_frame, text="1. FULL 静电势图", variable=full_var
@@ -225,7 +313,7 @@ def create_gui():
     ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(4, 0))
 
     # ===== 目标残基 & 链 =====
-    target_frame = tk.LabelFrame(research_container, text="目标残基（可选）", padx=8, pady=8)
+    target_frame = tk.LabelFrame(plot_tab, text="目标残基（可选）", padx=8, pady=8)
     target_frame.pack(fill="x", padx=10, pady=5)
 
     chain_var = tk.StringVar(value="A")
@@ -253,7 +341,7 @@ def create_gui():
     ).grid(row=3, column=0, columnspan=4, sticky="w", pady=(4, 0))
 
     # ===== 输出设置 =====
-    out_frame = tk.LabelFrame(research_container, text="输出位置", padx=8, pady=8)
+    out_frame = tk.LabelFrame(plot_tab, text="输出位置", padx=8, pady=8)
     out_frame.pack(fill="x", padx=10, pady=5)
 
     out_dir_var = tk.StringVar(value=os.path.join("D:\\", "demo"))
@@ -285,7 +373,7 @@ def create_gui():
 
     # ===== MSA 自动候选 =====
     msa_frame = tk.LabelFrame(
-        research_container,
+        msa_tab,
         text="MSA 自动候选小工具（Clustal-Omega + OsAKT2）",
         padx=8,
         pady=8,
@@ -823,6 +911,7 @@ def create_gui():
                 residue_expr=residue_expr,
                 out_dir=out_dir,
                 features=features,
+                policy=policy_var.get(),
                 roi_expr=roi_expr,
             )
         except Exception as e:
@@ -861,7 +950,7 @@ def create_gui():
             "已在 HOLE 工作目录生成基础对比图：\n" + "\n".join(paths)
         )
 
-    btn_frame = tk.Frame(research_container)
+    btn_frame = tk.Frame(plot_tab)
     btn_frame.pack(fill="x", padx=10, pady=10)
 
     tk.Button(btn_frame, text="生成 .cxc", command=on_generate, width=15).pack(side="left")
@@ -869,7 +958,7 @@ def create_gui():
     fit_enabled_var = tk.BooleanVar(value=True)
     standard_rows = []
 
-    fit_frame = tk.LabelFrame(research_container, text="尺子拟合（可选）")
+    fit_frame = tk.LabelFrame(summary_tab, text="尺子拟合（可选）")
     fit_frame.pack(fill="x", padx=10, pady=(6, 8))
 
     tk.Checkbutton(
@@ -935,35 +1024,17 @@ def create_gui():
             messagebox.showerror("缺少输出目录", "请先在上面设置“图片 / 文本输出目录”。")
             return
 
+        labels = collect_models_from_gui()
+        organize_outputs(out_dir, labels, policy_var.get())
+
         try:
             summary_csv, detail_csv = summarize_sasa_hbonds(out_dir)
         except Exception as e:
             messagebox.showerror("汇总失败", f"解析 SASA/H-bonds 日志时出错：\n{e}")
             return
 
-        labels = ["WT"]
-        for idx, row in enumerate(mutant_rows, start=1):
-            label = (row["label_var"].get() or "").strip()
-            if label:
-                labels.append(label)
-        labels = sorted(set(labels))
-
-        for label in labels:
-            subdir = os.path.join(out_dir, label)
-            os.makedirs(subdir, exist_ok=True)
-            prefix = f"{label}_"
-            for name in os.listdir(out_dir):
-                if not name.startswith(prefix):
-                    continue
-                src = os.path.join(out_dir, name)
-                if not os.path.isfile(src):
-                    continue
-                new_name = name[len(prefix):] if len(name) > len(prefix) else name
-                dst = os.path.join(subdir, new_name)
-                try:
-                    shutil.move(src, dst)
-                except Exception:
-                    continue
+        if policy_var.get() == "Minimal":
+            cleanup_minimal(out_dir, labels)
 
         msg = (
             "已生成：\n"
@@ -991,8 +1062,9 @@ def create_gui():
             messagebox.showwarning("标准点不足", "用于拟合的标准点少于 3 个，本次将使用默认权重评分。")
             return None
 
-        os.makedirs(sasa_dir, exist_ok=True)
-        std_path = os.path.join(sasa_dir, "standards_gui.csv")
+        tables_dir = os.path.join(sasa_dir, "tables")
+        os.makedirs(tables_dir, exist_ok=True)
+        std_path = os.path.join(tables_dir, "standards_gui.csv")
         with open(std_path, "w", newline="", encoding="utf-8-sig") as f:
             writer = csv.writer(f)
             writer.writerow(["Model", "y"])
@@ -1012,7 +1084,7 @@ def create_gui():
             messagebox.showerror("缺少 SASA 目录", "请先在研究模式里设置“图片 / 文本输出目录”。")
             return
 
-        metrics_all = os.path.join(sasa_dir, "metrics_all.csv")
+        metrics_all = os.path.join(sasa_dir, "tables", "metrics_all.csv")
 
         try:
             merge_all_metrics(hole_dir=hole_dir, sasa_dir=sasa_dir, out_csv=metrics_all)
@@ -1066,34 +1138,37 @@ def create_gui():
         )
         messagebox.showinfo("决策表已生成", msg)
 
+    summary_btn_frame = tk.Frame(summary_tab)
+    summary_btn_frame.pack(fill="x", padx=10, pady=8)
+
     tk.Button(
-            btn_frame,
-            text="汇总 SASA / H-bonds",
-            command=on_summarize_sasa_hbonds,
-            width=18,
+        summary_btn_frame,
+        text="汇总 SASA / H-bonds",
+        command=on_summarize_sasa_hbonds,
+        width=18,
     ).pack(side="left", padx=8)
 
     tk.Button(
-            btn_frame,
-            text="合并 HOLE + SASA 指标",
+        summary_btn_frame,
+        text="合并 HOLE + SASA 指标",
         command=on_merge_all_metrics,
         width=22,
     ).pack(side="left", padx=8)
 
     tk.Button(
-        btn_frame,
+        summary_btn_frame,
         text="生成决策表模板",
         command=on_make_stage3_table,
         width=22,
     ).pack(side="left", padx=8)
 
     tk.Label(
-        btn_frame,
+        summary_btn_frame,
         text="先在 ChimeraX 里 runscript 跑完，再点汇总，就会吐出 CSV 指标表。",
         fg="#555"
     ).pack(side="left", padx=10)
     tk.Label(
-        btn_frame,
+        summary_btn_frame,
         text="窗口不会自动退出。",
         fg="#555"
     ).pack(side="left", padx=10)
