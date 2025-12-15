@@ -923,6 +923,21 @@ def create_gui():
                 "可以用 Excel 打开做对比分析。"
         )
 
+    def resolve_standards_csv(sasa_dir: str, manual_path: str | None) -> str | None:
+        candidates = []
+        if manual_path:
+            candidates.append(manual_path)
+
+        candidates.append(os.path.join(sasa_dir, "standards.csv"))
+        candidates.append(os.path.join(sasa_dir, "standards_template.csv"))
+
+        for p in candidates:
+            if p and os.path.isfile(p):
+                return os.path.abspath(p)
+
+        return None
+
+
     def on_merge_all_metrics():
         hole_dir = hole_base_dir_var.get().strip()
         sasa_dir = out_dir_var.get().strip()
@@ -936,7 +951,8 @@ def create_gui():
 
         metrics_all = os.path.join(sasa_dir, "metrics_all.csv")
 
-        std_csv = standards_csv_var.get().strip() or None
+        manual_std = standards_csv_var.get().strip() or None
+        std_csv = resolve_standards_csv(sasa_dir, manual_std)
 
         try:
             merge_all_metrics(hole_dir=hole_dir, sasa_dir=sasa_dir, out_csv=metrics_all)
@@ -952,19 +968,38 @@ def create_gui():
                 standards_csv=std_csv,
             )
         except Exception as e:
-            messagebox.showerror("评分失败", f"score_metrics 出错：\n{e}")
-            return
+            if std_csv:
+                messagebox.showwarning(
+                    "标准集不可用，已回退默认权重",
+                    f"标准集：{std_csv}\n\n原因：{e}\n\n将使用默认权重继续评分。",
+                )
+                try:
+                    scored_path = score_metrics_file(
+                        metrics_all,
+                        wt_name="WT",
+                        pdb_dir=hole_dir,
+                        standards_csv=None,
+                    )
+                except Exception as e2:
+                    messagebox.showerror("评分失败", f"回退默认权重仍失败：\n{e2}")
+                    return
+            else:
+                messagebox.showerror("评分失败", f"score_metrics 出错：\n{e}")
+                return
+
+        used = std_csv if std_csv else "未使用标准集（默认权重）"
 
         messagebox.showinfo(
             "合并 + 评分完成",
-            "已生成 HOLE + SASA 总表：\n"
-            f"{metrics_all}\n\n"
-            "并已写出结构评分 + 置信度表：\n"
-            f"{scored_path}\n\n"
-            "metrics_scored.csv 里包含：\n"
-            "- r_min / gate_length / HBonds / SASA_residue\n"
-            "- GateTightScore / TotalScore / ScoreClass\n"
-            "- pLDDT 均值 / 中位数 / 低-中-高残基数 + ConfidenceClass"
+            "已生成 HOLE + SASA 总表：\n",
+            f"{metrics_all}\n\n",
+            "并已写出结构评分 + 置信度表：\n",
+            f"{scored_path}\n\n",
+            "metrics_scored.csv 里包含：\n",
+            "- r_min / gate_length / HBonds / SASA_residue\n",
+            "- GateTightScore / TotalScore / ScoreClass\n",
+            "- pLDDT 均值 / 中位数 / 低-中-高残基数 + ConfidenceClass\n\n",
+            f"本次尺子来源：{used}"
         )
 
     def on_make_stage3_table():
@@ -981,8 +1016,8 @@ def create_gui():
             return
 
         messagebox.showinfo(
-            "Stage3 表已生成",
-            "已生成 Stage3 决策表模板：\n"
+            "决策表已生成",
+            "已生成决策表模板：\n"
             f"{table_path}\n\n"
             "Patch_Electrostatics / Contacts_Qualitative 两列留空，方便看图填写。",
         )
@@ -1003,7 +1038,7 @@ def create_gui():
 
     tk.Button(
         btn_frame,
-        text="生成 Stage3 决策表模板",
+        text="生成决策表模板",
         command=on_make_stage3_table,
         width=22,
     ).pack(side="left", padx=8)
