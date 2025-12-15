@@ -295,9 +295,15 @@ def _fit_weights(df: _pd.DataFrame, standards_csv: str) -> Tuple[float, float, f
     if "Model" not in standards.columns or "y" not in standards.columns:
         raise ValueError("standards.csv 需要包含 'Model' 和 'y' 两列。")
 
+    standards["y"] = _pd.to_numeric(standards["y"], errors="coerce")
+
     merged = df.merge(standards[["Model", "y"]], on="Model", how="inner")
     if merged.empty:
         raise ValueError("standards.csv 与 metrics_all.csv 没有重叠的 Model，无法拟合。")
+
+    merged = merged.dropna(subset=["GateTightScore", "HydroScore", "y"])
+    if len(merged) < 3:
+        raise ValueError("用于拟合的标准点少于 3 个或存在空值，无法拟合。")
 
     X = _np.c_[
         merged["GateTightScore"].to_numpy(),
