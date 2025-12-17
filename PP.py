@@ -2,6 +2,7 @@ from typing import List, Dict, Tuple, Optional
 from collections import defaultdict
 import statistics
 from pathlib import Path
+import csv
 import os, re, glob
 import shutil
 import subprocess
@@ -21,6 +22,12 @@ try:
     from Bio.PDB import PDBParser as _PDBParser
 except Exception:  # pragma: no cover - optional dep
     _PDBParser = None
+
+try:
+    from msa_osakt2_tool import export_alignment_view, suggest_candidates
+except ImportError:  # pragma: no cover - optional dep
+    export_alignment_view = None
+    suggest_candidates = None
 
 # 一字母 → 三字母氨基酸代码映射，只包含标准 20 个
 ONE_TO_THREE = {
@@ -60,6 +67,153 @@ HOLE_WSL_EXE = "hole"  # env 里 HOLE 的命令名
 # lck这台机子现在的路径是 /usr/bin/clustalo
 # 如果以后换机器，只需要改这里。
 CLUSTALO_WSL_EXE = "/usr/bin/clustalo"
+
+
+def _parse_clustal_alignment(aln_path: Path) -> Tuple[List[str], List[str]]:
+    """解析 Clustal-Omega .aln，返回 (sequence_names, sequences)。"""
+
+    aln_path = Path(aln_path)
+    if not aln_path.is_file():
+        raise FileNotFoundError(f"找不到 Clustal-Omega 对齐文件：{aln_path}")
+
+    names: List[str] = []
+    seq_chunks: Dict[str, List[str]] = defaultdict(list)
+
+    with open(aln_path, encoding="utf-8", errors="ignore") as f:
+        for raw_line in f:
+            line = raw_line.rstrip("\n")
+            striped = line.strip()
+            if not striped or striped.upper().startswith("CLUSTAL"):
+                continue
+            # 共识行只含 *:. 等符号，直接跳过
+            if striped.startswith(("*", ":", ".")):
+                continue
+
+            parts = line.split()
+            if len(parts) < 2:
+                continue
+
+            name, seq_part = parts[0], parts[1]
+            if name not in names:
+                names.append(name)
+            seq_chunks[name].append(seq_part)
+
+    if not names:
+        raise ValueError(f"在 {aln_path} 中没有解析到任何序列。")
+
+    sequences = ["".join(seq_chunks[name]) for name in names]
+    lengths = {len(seq) for seq in sequences}
+    if len(lengths) != 1:
+        raise ValueError(f"对齐序列长度不一致：{lengths}")
+
+    return names, sequences
+
+
+def _choose_reference(seq_names: List[str]) -> str:
+    """选择参考序列：优先 OsAKT2，其次 AKT2_ORYS/ORYSJ，最后第一个。"""
+
+    if not seq_names:
+        raise ValueError("序列列表为空，无法选择参考序列。")
+
+    preferred = ["OsAKT2"]
+    fallbacks = ["AKT2_ORYS", "AKT2_ORYSJ"]
+
+    for name in preferred + fallbacks:
+        for candidate in seq_names:
+            if candidate.upper().startswith(name.upper()):
+                return candidate
+
+    return seq_names[0]
+
+
+def _export_alignment_view_fallback(aln_path: Path, view_csv_path: Path) -> None:
+    names, sequences = _parse_clustal_alignment(aln_path)
+    ref_name = _choose_reference(names)
+    ref_idx = names.index(ref_name)
+
+    alignment_len = len(sequences[0])
+    ref_resnums: List[Optional[int]] = []
+    ref_counter = 0
+    for pos in range(alignment_len):
+        ref_char = sequences[ref_idx][pos]
+        if ref_char != "-":
+            ref_counter += 1
+            ref_resnums.append(ref_counter)
+        else:
+            ref_resnums.append(None)
+
+    with open(view_csv_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["Alignment_Pos", "Ref_Resnum", *names])
+
+        for pos in range(alignment_len):
+            ref_resnum = ref_resnums[pos] if ref_resnums[pos] is not None else ""
+            row_chars = [seq[pos] for seq in sequences]
+            writer.writerow([pos + 1, ref_resnum, *row_chars])
+
+
+def _suggest_candidates_fallback(aln_path: Path, cand_csv_path: Path) -> None:
+    names, sequences = _parse_clustal_alignment(aln_path)
+    ref_name = _choose_reference(names)
+    ref_idx = names.index(ref_name)
+
+    alignment_len = len(sequences[0])
+    ref_resnums: List[Optional[int]] = []
+    ref_counter = 0
+    for pos in range(alignment_len):
+        ref_char = sequences[ref_idx][pos]
+        if ref_char != "-":
+            ref_counter += 1
+            ref_resnums.append(ref_counter)
+        else:
+            ref_resnums.append(None)
+
+    with open(cand_csv_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(
+            [
+                "Alignment_Pos",
+                "Ref_Resnum",
+                "Ref_AA",
+                "Conserved_AA",
+                "Support_Count",
+                "Total_Others",
+            ]
+        )
+
+        for pos in range(alignment_len):
+            ref_char = sequences[ref_idx][pos]
+            if ref_char == "-":
+                continue
+
+            others = [
+                sequences[i][pos]
+                for i in range(len(names))
+                if i != ref_idx and sequences[i][pos] != "-"
+            ]
+
+            if len(others) < 2:
+                continue
+
+            conserved_set = set(others)
+            if len(conserved_set) != 1:
+                continue
+
+            conserved = others[0]
+            if conserved == ref_char:
+                continue
+
+            ref_resnum = ref_resnums[pos] if ref_resnums[pos] is not None else ""
+            writer.writerow(
+                [
+                    pos + 1,
+                    ref_resnum,
+                    ref_char,
+                    conserved,
+                    len(others),
+                    len(others),
+                ]
+            )
 
 
 def _tables_dir(out_dir: str) -> str:
@@ -585,13 +739,15 @@ def run_osakt2_msa(
             f"STDOUT:\n{result.stdout}\n\nSTDERR:\n{result.stderr}"
         )
 
-    from msa_osakt2_tool import export_alignment_view, suggest_candidates
-
     view_csv = out_dir / "alignment_osakt2_view.csv"
     cand_csv = out_dir / "candidate_sites_auto_v0.1.csv"
 
-    export_alignment_view(aln_path, view_csv)
-    suggest_candidates(aln_path, cand_csv)
+    if export_alignment_view and suggest_candidates:
+        export_alignment_view(aln_path, view_csv)
+        suggest_candidates(aln_path, cand_csv)
+    else:
+        _export_alignment_view_fallback(aln_path, view_csv)
+        _suggest_candidates_fallback(aln_path, cand_csv)
 
     return str(aln_path), str(view_csv), str(cand_csv)
 
@@ -642,13 +798,15 @@ def run_osakt2_msa_wsl(fasta_path_win: str) -> Tuple[str, str, str]:
     aln_path_win = str(fasta_path.with_name(aln_name))
     out_dir = fasta_path.parent
 
-    from msa_osakt2_tool import export_alignment_view, suggest_candidates
-
     view_csv = out_dir / "alignment_osakt2_view.csv"
     cand_csv = out_dir / "candidate_sites_auto_v0.1.csv"
 
-    export_alignment_view(Path(aln_path_win), view_csv)
-    suggest_candidates(Path(aln_path_win), cand_csv)
+    if export_alignment_view and suggest_candidates:
+        export_alignment_view(Path(aln_path_win), view_csv)
+        suggest_candidates(Path(aln_path_win), cand_csv)
+    else:
+        _export_alignment_view_fallback(Path(aln_path_win), view_csv)
+        _suggest_candidates_fallback(Path(aln_path_win), cand_csv)
 
     return aln_path_win, str(view_csv), str(cand_csv)
 def _extract_plddt_from_pdb(pdb_path: Path):
@@ -1163,6 +1321,7 @@ def build_cxc_script(
         add("surface #%d" % wt_id)
         add("coulombic #%d range -10,10" % wt_id)
         add('save "%s/WT_coulombic.png" width 2200 supersample 3' % _cx_dir("WT"))
+        add("surface hide")
         add("")
         # 每个突变体
         for m in mutant_list:
@@ -1174,6 +1333,7 @@ def build_cxc_script(
             add("surface #%d" % mid)
             add("coulombic #%d range -10,10" % mid)
             add('save "%s/%s_coulombic.png" width 2200 supersample 3' % (_cx_dir(label), label))
+            add("surface hide")
             add("")
 
     # 是否需要近景视角（局部分析）
@@ -1191,11 +1351,13 @@ def build_cxc_script(
         add("clip near 8; clip far 60")
         add("view name TARGET")
         add("delete pseudobonds")
+        add("surface hide")
         add("")
 
     # 接触图
     if features.get("contacts") and residue_expr:
         add("# ===================== 接触图（≤4 Å） =====================")
+        add("surface hide")
         all_models = mutant_list + [{"label": "WT", "model_id": wt_id}]
         for m in all_models:
             label = m.get("label", "MUT")
@@ -1216,6 +1378,7 @@ def build_cxc_script(
     # 氢键图
     if features.get("hbonds") and residue_expr:
         add("# ===================== 氢键 + 文本日志 =====================")
+        add("surface hide")
         all_models = mutant_list + [{"label": "WT", "model_id": wt_id}]
         for m in all_models:
             label = m.get("label", "MUT")
@@ -1267,6 +1430,7 @@ def build_cxc_script(
         add("clip far 50")
         add(f"view name \"{roi_view_name}\"")
         add("delete pseudobonds")
+        add("surface hide")
         add("")
 
         site_models = [{"label": "WT", "model_id": wt_id}, *mutant_list]
@@ -1283,8 +1447,7 @@ def build_cxc_script(
             add(f"color #{mid} white")
 
             if features.get("sites_contacts"):
-                add(f"surface #{mid}")
-                add(f"transparency #{mid} 60")
+                add("surface hide")
                 add(f"show #{mid}/{chain_id}:{roi_expr}")
                 add(f"color #{mid}/{chain_id}:{roi_expr} yellow")
                 add(f"style #{mid}/{chain_id}:{roi_expr} stick")
@@ -1302,6 +1465,7 @@ def build_cxc_script(
                     f'save "{sites_dir_cx}/{label}_sites_coulombic.png" '
                     "width 1600 height 1000 supersample 3"
                 )
+                add("surface hide")
 
             add("")
 
