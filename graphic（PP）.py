@@ -23,335 +23,10 @@ from PP import (
     cleanup_minimal,
     OUTPUT_POLICIES,
 )
+from help_texts import HELP_CONTENT
 
 
 _help_win = None
-
-
-HELP_CONTENT = [
-    {
-        "id": "quick_start",
-        "title": "快速上手",
-        "items": [
-            {
-                "id": "output_cheatsheet",
-                "title": "输出速查（王牌提示）",
-                "tldr": "不确定会产出啥？去“输出速查（动态）”点刷新，它会按你当前勾选列出证据清单。",
-                "steps": [
-                    "打开 Help → 选择“输出速查（动态）”页。",
-                    "点击【刷新】根据当前勾选实时更新列表。",
-                    "按列表里的路径去找图/表，直接当作证据链目录。",
-                ],
-                "use_when": "想确认跑完会得到哪些图/表/日志。",
-                "inputs": ["无额外输入，跟随当前勾选状态"],
-                "actions": ["Help 页签 → 输出速查（动态） → 刷新"],
-                "outputs": ["动态列表（不生成新文件，仅列出预计文件）"],
-                "insights": "提前知道证据链，避免漏跑或漏存。",
-            },
-            {
-                "id": "qs_roi",
-                "title": "ROI 一眼流（推荐）",
-                "tldr": "最少输入，最快得到 ROI 接触+电势对比图。",
-                "steps": [
-                    "模式=研究；预设=只要ROI（推荐）",
-                    "填：链ID + ROI残基表达式",
-                    "点：生成 .cxc → ChimeraX runscript",
-                ],
-                "use_when": "需要用最短路径拿到局部接触+电势的对比图。",
-                "inputs": ["链 ID（默认 A）", "ROI 残基表达式（如 283,286,291,298-300）"],
-                "actions": ["研究模式 → 勾 ROI 接触 + ROI 静电势", "生成 .cxc → 在 ChimeraX 执行 runscript"],
-                "outputs": [
-                    "out_dir/gate_sites/WT_sites_contacts.png",
-                    "out_dir/gate_sites/WT_sites_coulombic.png",
-                    "out_dir/gate_sites/<MUT>_sites_contacts.png",
-                    "out_dir/gate_sites/<MUT>_sites_coulombic.png",
-                ],
-                "insights": "两张图就能交代局部接触+电势的倾向变化，适合直接写进 stage3 的 Patch_Electrostatics 和 Contacts_Qualitative。",
-                "pitfalls": ["链 ID 写错=全空", "ROI 表达式写错=输出为空"],
-            },
-        ],
-    },
-    {
-        "id": "global_view",
-        "title": "研究模式｜全景&ROI",
-        "items": [
-            {
-                "id": "full_coulombic",
-                "title": "1. FULL 静电势（全蛋白）",
-                "tldr": "整蛋白表面电势对比，用来看整体电荷地形有没有被突变改写。",
-                "steps": [
-                    "勾选：FULL 静电势",
-                    "需要：WT PDB + 突变体 PDB（可多条）",
-                    "生成 .cxc → ChimeraX runscript",
-                ],
-                "use_when": "想看全局电荷格局有没有大改、远端是否被牵动。",
-                "inputs": ["WT PDB（必填）", "突变体 PDB（可多模型）"],
-                "actions": ["勾 FULL 静电势 → 生成 .cxc → ChimeraX runscript"],
-                "outputs": ["out_dir/WT/WT_coulombic.png", "out_dir/<MUT>/<MUT>_coulombic.png"],
-                "insights": "整体偏正/偏负/补丁位置，帮你判断是否有远程静电效应。",
-            },
-            {
-                "id": "roi_contacts",
-                "title": "5. ROI 局部接触图",
-                "tldr": "指定 ROI，画 ≤4Å 接触的对比图，方便肉眼判读。",
-                "steps": [
-                    "填 ROI 残基表达式",
-                    "勾 ROI 接触",
-                    "生成 .cxc → ChimeraX runscript",
-                ],
-                "use_when": "要在特定片段一眼看“谁靠近/谁远离”。",
-                "inputs": ["ROI 残基表达式", "链 ID（默认 A）"],
-                "actions": ["研究模式 → 勾 ROI 接触 → 生成 .cxc"],
-                "outputs": ["out_dir/gate_sites/<Model>_sites_contacts.png"],
-                "insights": "用作 Contacts_Qualitative 的佐证；配合电势图更全面。",
-                "pitfalls": ["ROI 填空=不会生成", "只生成 .cxc 不等于完成，记得去 ChimeraX 跑"]
-            },
-            {
-                "id": "roi_coulombic",
-                "title": "6. ROI 局部静电势图",
-                "tldr": "ROI 电势补丁对比，解释局部微环境的倾向变化（别硬因果）。",
-                "steps": [
-                    "填 ROI 残基表达式",
-                    "勾 ROI 静电势",
-                    "生成 .cxc → ChimeraX runscript",
-                ],
-                "use_when": "想知道 ROI 附近的正/负势补丁有没有翻转或强化。",
-                "inputs": ["ROI 残基表达式", "链 ID（默认 A）"],
-                "actions": ["研究模式 → 勾 ROI 静电势 → 生成 .cxc"],
-                "outputs": ["out_dir/gate_sites/<Model>_sites_coulombic.png"],
-                "insights": "把“电势更正/更负”的观察写进 stage3 表的 Patch_Electrostatics。",
-            },
-        ],
-    },
-    {
-        "id": "gate_analysis",
-        "title": "门闩分析（接触/氢键/SASA）",
-        "items": [
-            {
-                "id": "contacts_near",
-                "title": "2. 近景接触（≤4Å）",
-                "tldr": "以目标残基为中心的接触网络，看看门闩是否更挤或更松。",
-                "steps": [
-                    "填：目标残基表达式",
-                    "勾 近景接触",
-                    "生成 .cxc → ChimeraX runscript",
-                ],
-                "use_when": "关心门闩附近的堆叠/释放趋势。",
-                "inputs": ["目标残基表达式（如 298-300）", "链 ID"],
-                "actions": ["研究模式 → 勾 近景接触 → 生成 .cxc"],
-                "outputs": ["out_dir/<Model>/<Model>_contacts.png"],
-                "insights": "谁靠近/谁退场能解释封闭/松动；对照 ROI 图更稳。",
-            },
-            {
-                "id": "hbonds_local",
-                "title": "3. 近景氢键 + 日志",
-                "tldr": "氢键数量和对象的变化，直接告诉你“门被谁拽着”。",
-                "steps": [
-                    "填：目标残基表达式",
-                    "勾 近景氢键",
-                    "生成 .cxc → ChimeraX runscript",
-                ],
-                "use_when": "需要可统计的氢键信息（后续汇总会读取 txt）。",
-                "inputs": ["目标残基表达式", "链 ID", "输出等级建议 Standard 以上保留图片"],
-                "actions": ["研究模式 → 勾 近景氢键 → 生成 .cxc"],
-                "outputs": ["out_dir/<Model>/<Model>_hbonds.txt", "out_dir/<Model>/<Model>_hbonds.png（Standard/Full）"],
-                "insights": "*_hbonds.txt 会被汇总用来计数，别删。图可肉眼检查氢键几何。",
-                "pitfalls": ["Minimal 输出等级不会保存氢键图，只保留 txt"]
-            },
-            {
-                "id": "sasa_targets",
-                "title": "4. 目标残基 SASA",
-                "tldr": "给目标残基算暴露度，结合接触/氢键解释微环境变化。",
-                "steps": [
-                    "填：目标残基表达式",
-                    "勾 目标残基 SASA",
-                    "生成 .cxc → ChimeraX runscript",
-                ],
-                "use_when": "想要可量化的埋藏/暴露度（后续 metrics 会用）。",
-                "inputs": ["目标残基表达式", "链 ID"],
-                "actions": ["研究模式 → 勾 SASA → 生成 .cxc"],
-                "outputs": ["out_dir/<Model>/<Model>_sasa.html"],
-                "insights": "SASA 数字 + 氢键/接触组合，能解释为什么环境变了。",
-            },
-        ],
-    },
-    {
-        "id": "hole_pipeline",
-        "title": "HOLE 管道",
-        "items": [
-            {
-                "id": "hole_prepare",
-                "title": "HOLE 输入准备",
-                "tldr": "把 WT/突变体 PDB 和轴参数准备好，生成每个模型的 HOLE 输入。",
-                "steps": [
-                    "填 HOLE 目录 + 模型列表（WT,DMI…）",
-                    "生成找轴 .cxc → 在 ChimeraX 跑 → 回填 cpoint/cvect",
-                    "点“从 WT+突变体准备 HOLE PDB”",
-                ],
-                "use_when": "正式跑 HOLE 之前的准备阶段。",
-                "inputs": ["HOLE 工作目录", "模型列表（逗号分隔）", "链 ID", "找轴残基表达式/或手填 cpoint,cvect"],
-                "actions": ["生成找轴 .cxc → ChimeraX → 回填轴参数", "从 WT+突变体准备 HOLE PDB"],
-                "outputs": ["<HOLE目录>/<Model>.pdb", "<Model>_hole.inp"],
-                "insights": "轴参数正确与否直接影响曲线可信度，建议用自动找轴。",
-            },
-            {
-                "id": "hole_run",
-                "title": "执行 HOLE + 汇总",
-                "tldr": "一键跑 HOLE（可自动调用 WSL），并生成曲线/摘要。",
-                "steps": [
-                    "勾“自动在 WSL 调用 HOLE”可直接跑；否则手动跑 log",
-                    "勾“根据 log 生成 CSV & 曲线图”",
-                    "点“执行 HOLE 管道”",
-                ],
-                "use_when": "准备好 inp/pdb 后正式出孔径曲线。",
-                "inputs": ["HOLE 工作目录（包含 *_hole.inp）", "WSL conda 配置或自定义 HOLE 命令"],
-                "actions": ["执行 HOLE 管道"],
-                "outputs": [
-                    "<HOLE目录>/<Model>-HOLE/<Model>_hole.log",
-                    "<HOLE目录>/<Model>-HOLE/<Model>_hole_profile.pdb",
-                    "hole_profile_samples.csv",
-                    "hole_min_table.csv",
-                    "hole_min_summary.csv",
-                    "hole_profiles.png",
-                ],
-                "insights": "重点看 r_min_A 和 gate_length_A，越小/越长代表越卡。",
-                "pitfalls": ["WSL 路径/conda 环境不对会导致 HOLE 失败"]
-            },
-        ],
-    },
-    {
-        "id": "summary_metrics",
-        "title": "汇总&评分（metrics / stage3）",
-        "items": [
-            {
-                "id": "summaries",
-                "title": "汇总 SASA + 氢键",
-                "tldr": "把 *_sasa.html 和 *_hbonds.txt 变成可统计的表。",
-                "steps": [
-                    "填研究输出目录 out_dir",
-                    "点“汇总 SASA / H-bonds”",
-                    "查看 out_dir/tables/ 下的 CSV",
-                ],
-                "use_when": "ChimeraX 跑完研究模式后想做量化。",
-                "inputs": ["研究模式输出目录 out_dir"],
-                "actions": ["汇总 SASA / H-bonds"],
-                "outputs": ["tables/sasa_hbonds_summary.csv", "tables/sasa_per_residue.csv"],
-                "insights": "这是后续打分的基础表，别遗漏 hbonds.txt / sasa.html。",
-            },
-            {
-                "id": "metrics_merge",
-                "title": "合并 HOLE + SASA 指标",
-                "tldr": "把 HOLE 的 r_min/gate_length 与 SASA/H-bonds 汇成一张 metrics 表并评分。",
-                "steps": [
-                    "填 hole_dir + sasa_dir",
-                    "点“合并 HOLE + SASA 指标”",
-                    "可选：上传标准集做线性拟合评分",
-                ],
-                "use_when": "有 HOLE 结果后需要一个综合指标。",
-                "inputs": ["hole_dir（含 hole_min_table.csv）", "sasa_dir（含 tables/sasa_hbonds_summary.csv）"],
-                "actions": ["合并 HOLE + SASA 指标", "可选：评分 metrics 文件"],
-                "outputs": ["tables/metrics_all.csv", "tables/metrics_scored.csv"],
-                "insights": "GateTightScore + HydroScore 组合的 TotalScore 只代表结构指标，仍需实验验证。",
-            },
-            {
-                "id": "stage3_table",
-                "title": "生成决策表 stage3_table.csv",
-                "tldr": "自动列好图片路径和量化指标，留空列给你填主观判读。",
-                "steps": [
-                    "汇总完指标后点击“生成 stage3 表”",
-                    "打开 tables/stage3_table.csv",
-                    "手填 Patch_Electrostatics / Contacts_Qualitative",
-                ],
-                "use_when": "要做最终决策/汇报，需把证据链整理成表。",
-                "inputs": ["研究输出目录 out_dir"],
-                "actions": ["生成决策表模板（stage3_table.csv）"],
-                "outputs": ["tables/stage3_table.csv"],
-                "insights": "表里会带上 ROI 接触/电势图路径，直接拷进幻灯或报告。",
-            },
-        ],
-    },
-    {
-        "id": "faq",
-        "title": "常见报错",
-        "items": [
-            {
-                "id": "swapaa",
-                "title": "swapaa 找不到残基/链",
-                "tldr": "99% 是链 ID 或编号对不上。",
-                "steps": [
-                    "在 ChimeraX 试 select #1/A:298 是否选中",
-                    "确认 GUI 里链 ID/编号一致",
-                    "重跑生成 .cxc",
-                ],
-                "use_when": "ChimeraX 报 swapaa 找不到残基/链。",
-                "inputs": ["正确的链 ID", "与 PDB 匹配的残基编号"],
-                "actions": ["在 ChimeraX 手动 select 验证", "改正链/编号后重新生成脚本"],
-                "outputs": ["无新输出（解决后再跑正常产出）"],
-                "insights": "先在 ChimeraX 验证选择是否命中，能提前排坑。",
-            },
-            {
-                "id": "no_outputs",
-                "title": "ChimeraX 跑完没输出图",
-                "tldr": "多半是路径/权限问题，或只生成了 .cxc 没跑。",
-                "steps": [
-                    "确认 out_dir 有写权限，路径别含奇怪符号",
-                    "确保在 ChimeraX 真正 runscript 过",
-                    "再看输出目录是否有文件",
-                ],
-                "use_when": "生成 .cxc 成功，但目录里空空。",
-                "inputs": ["有效的 out_dir 路径"],
-                "actions": ["检查路径权限", "重新 runscript"],
-                "outputs": ["正常情况下应生成对应 PNG/HTML/TXT"] ,
-                "insights": "Windows 路径会自动转成 /，尽量避免奇怪符号。",
-            },
-            {
-                "id": "summary_missing",
-                "title": "汇总时报：找不到 *_sasa.html 或 *_hbonds.txt",
-                "tldr": "要么没跑相关步骤，要么忘了 runscript。",
-                "steps": [
-                    "确认勾选了 SASA/氢键并在 ChimeraX 跑过",
-                    "检查 out_dir 是否有对应 html/txt",
-                    "缺啥补跑啥，再点汇总",
-                ],
-                "use_when": "汇总时报缺文件。",
-                "inputs": ["完整的研究模式输出目录"],
-                "actions": ["补跑缺失的步骤", "重新汇总"],
-                "outputs": ["缺失文件补齐后可生成汇总 CSV"],
-                "insights": "只跑 ROI（5/6）不会有 SASA/氢键文件，正常现象。",
-            },
-            {
-                "id": "hole_fail",
-                "title": "HOLE 自动运行失败",
-                "tldr": "先排查 WSL 可执行和 conda 环境。",
-                "steps": [
-                    "在 WSL 手动跑 hole 看是否可用",
-                    "核对 PP.py 里的 HOLE_WSL_CONDA_INIT/ENV",
-                    "必要时改“HOLE 命令”为完整可执行路径",
-                ],
-                "use_when": "执行 HOLE 管道报错。",
-                "inputs": ["正确的 WSL 环境配置"],
-                "actions": ["WSL 手测 HOLE", "修正 conda 路径或命令"],
-                "outputs": ["修复后再跑可得到 log/曲线"],
-                "insights": "先确保命令在 WSL 单独可跑，再交给 GUI。",
-            },
-            {
-                "id": "msa_fail",
-                "title": "MSA 失败：找不到 Clustal-Omega",
-                "tldr": "检查 clustalo 路径（默认 /usr/bin/clustalo）。",
-                "steps": [
-                    "在 WSL 里执行 which clustalo",
-                    "如路径不同，在 PP.py 配置 CLUSTALO_WSL_EXE",
-                    "重跑“一键跑 MSA”",
-                ],
-                "use_when": "MSA 模块报找不到 clustalo。",
-                "inputs": ["正确的 clustalo 路径"],
-                "actions": ["更新配置", "重新运行 MSA"],
-                "outputs": ["<stem>_OsAKT2.aln", "alignment_osakt2_view.csv", "candidate_sites_auto_v0.1.csv"],
-                "insights": "路径配好一次即可复用。",
-            },
-        ],
-    },
-]
 
 
 def expected_outputs(ctx):
@@ -602,8 +277,30 @@ def build_outputs_tab(frame, ctx_getter):
     refresh()
 
 
+class ScrollableFrame(tk.Frame):
+    def __init__(self, container, *args, height=280, **kwargs):
+        super().__init__(container, *args, **kwargs)
+
+        canvas = tk.Canvas(self, height=height)
+        scrollbar = tk.Scrollbar(self, orient="vertical", command=canvas.yview)
+        self.scrollable_frame = tk.Frame(canvas)
+
+        self.scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all")),
+        )
+
+        canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+
 def open_help_window(root, ctx_getter):
     global _help_win
+    if _help_win is not None and not _help_win.winfo_exists():
+        _help_win = None
     if _help_win is not None and _help_win.winfo_exists():
         _help_win.lift()
         return
@@ -612,6 +309,13 @@ def open_help_window(root, ctx_getter):
     _help_win = win
     win.title("Help / 使用手册")
     win.geometry("1080x760")
+
+    def _on_close():
+        global _help_win
+        _help_win = None
+        win.destroy()
+
+    win.protocol("WM_DELETE_WINDOW", _on_close)
 
     nb = ttk.Notebook(win)
     nb.pack(fill="both", expand=True)
@@ -1373,190 +1077,182 @@ def create_gui():
     ).grid(row=2, column=2, columnspan=2, sticky="w", pady=(6, 0))
 
     # ===== 生成按钮 =====
-    def on_generate():
-        wt_pdb = wt_path_var.get().strip()
-        if not wt_pdb:
-            messagebox.showerror("缺少 WT", "请先选择 WT 的 PDB 文件。")
+    def generate_mutation_cxc(wt_pdb: str):
+        mut_out_dir = mut_out_dir_var.get().strip()
+        if not mut_out_dir:
+            messagebox.showerror("缺少输出目录", "请选择突变体输出目录。")
             return
 
-        mode = mode_var.get()
-
-        if mode == "mutate":
-            mut_out_dir = mut_out_dir_var.get().strip()
-            if not mut_out_dir:
-                messagebox.showerror("缺少输出目录", "请选择突变体输出目录。")
+        mutations = []
+        for idx, row in enumerate(mutation_rows, start=1):
+            residue = row["residue_var"].get().strip()
+            new_aa = row["new_aa_var"].get().strip().upper()
+            if not residue and not new_aa:
+                continue
+            if not residue or not new_aa:
+                messagebox.showerror("缺少参数", "突变行需要同时填写残基号和要改成的氨基酸。")
                 return
-
-            mutations = []
-            for idx, row in enumerate(mutation_rows, start=1):
-                residue = row["residue_var"].get().strip()
-                new_aa = row["new_aa_var"].get().strip().upper()
-                if not residue and not new_aa:
-                    continue
-                if not residue or not new_aa:
-                    messagebox.showerror("缺少参数", "突变行需要同时填写残基号和要改成的氨基酸。")
-                    return
-                label = row["label_var"].get().strip() or f"MUT{idx}"
-                chain = row["chain_var"].get().strip() or "A"
-                mutations.append({
+            label = row["label_var"].get().strip() or f"MUT{idx}"
+            chain = row["chain_var"].get().strip() or "A"
+            mutations.append(
+                {
                     "label": label,
                     "chain": chain,
                     "residue": residue,
                     "new_aa": new_aa,
-                })
-
-            if not mutations:
-                messagebox.showerror("没有突变", "请至少填写一行突变信息。")
-                return
-
-            generated_paths = []
-            try:
-                os.makedirs(mut_out_dir, exist_ok=True)
-                for mut in mutations:
-                    cxc_path = build_mutation_cxc(
-                        wt_pdb_path=wt_pdb,
-                        mut_label=mut["label"],
-                        chain=mut["chain"],
-                        residue=mut["residue"],
-                        new_aa=mut["new_aa"],
-                        out_dir=mut_out_dir,
-                    )
-                    generated_paths.append(cxc_path)
-            except Exception as e:
-                messagebox.showerror("生成失败", f"创建突变脚本时出错：\n{e}")
-                return
-
-            preview = "\n".join(generated_paths)
-            msg = (
-                f"已生成 {len(generated_paths)} 个 swapaa 脚本：\n{preview}\n\n"
-                "在 ChimeraX 中执行：\n"
-                f"runscript {generated_paths[0]}"
+                }
             )
-            messagebox.showinfo("完成", msg)
+
+        if not mutations:
+            messagebox.showerror("没有突变", "请至少填写一行突变信息。")
             return
 
-        if mode == "hole":
-            base_dir = hole_base_dir_var.get().strip()
-            if not base_dir:
-                messagebox.showerror("缺少目录", "请选择 HOLE 工作目录。")
+        generated_paths = []
+        try:
+            os.makedirs(mut_out_dir, exist_ok=True)
+            for mut in mutations:
+                cxc_path = build_mutation_cxc(
+                    wt_pdb_path=wt_pdb,
+                    mut_label=mut["label"],
+                    chain=mut["chain"],
+                    residue=mut["residue"],
+                    new_aa=mut["new_aa"],
+                    out_dir=mut_out_dir,
+                )
+                generated_paths.append(cxc_path)
+        except Exception as e:
+            messagebox.showerror("生成失败", f"创建突变脚本时出错：\n{e}")
+            return
+
+        preview = "\n".join(generated_paths)
+        msg = (
+            f"已生成 {len(generated_paths)} 个 swapaa 脚本：\n{preview}\n\n"
+            "在 ChimeraX 中执行：\n"
+            f"runscript {generated_paths[0]}"
+        )
+        messagebox.showinfo("完成", msg)
+
+    def run_hole_pipeline():
+        base_dir = hole_base_dir_var.get().strip()
+        if not base_dir:
+            messagebox.showerror("缺少目录", "请选择 HOLE 工作目录。")
+            return
+
+        models = [m.strip() for m in hole_models_var.get().split(",") if m.strip()]
+        if not models:
+            messagebox.showerror("缺少模型", "请至少填写一个模型名。")
+            return
+
+        try:
+            cpoint = (
+                float(hole_cpx_var.get()),
+                float(hole_cpy_var.get()),
+                float(hole_cpz_var.get()),
+            )
+            cvect = (
+                float(hole_cvx_var.get()),
+                float(hole_cvy_var.get()),
+                float(hole_cvz_var.get()),
+            )
+            sample = float(hole_sample_var.get())
+            endrad = float(hole_endrad_var.get())
+        except ValueError:
+            messagebox.showerror("参数错误", "cpoint/cvect/sample/endrad 请输入数字。")
+            return
+
+        radius_file = hole_radius_var.get().strip() or "simple.rad"
+        hole_cmd = hole_cmd_var.get().strip()
+        run_flag = bool(hole_run_var.get())
+        parse_flag = bool(hole_parse_var.get())
+
+        for m in models:
+            model_dir = os.path.join(base_dir, f"{m}-HOLE")
+            os.makedirs(model_dir, exist_ok=True)
+
+            src_pdb = os.path.join(base_dir, f"{m}.pdb")
+            if not os.path.exists(src_pdb):
+                messagebox.showerror(
+                    "缺少 PDB",
+                    f"找不到 {m} 的 PDB 文件：\n{src_pdb}\n请先点击“从 WT+突变体准备 HOLE PDB”。",
+                )
                 return
 
-            models = [m.strip() for m in hole_models_var.get().split(",") if m.strip()]
-            if not models:
-                messagebox.showerror("缺少模型", "请至少填写一个模型名。")
+            dst_pdb = os.path.join(model_dir, f"{m}.pdb")
+            try:
+                shutil.copy2(src_pdb, dst_pdb)
+            except Exception as e:
+                messagebox.showerror("复制失败", f"复制 {m} 的 PDB 到子目录时出错：\n{e}")
                 return
+
+            radius_src = os.path.join(base_dir, radius_file)
+            if os.path.isfile(radius_src):
+                try:
+                    shutil.copy2(radius_src, os.path.join(model_dir, radius_file))
+                except Exception:
+                    pass
 
             try:
-                cpoint = (
-                    float(hole_cpx_var.get()),
-                    float(hole_cpy_var.get()),
-                    float(hole_cpz_var.get()),
+                hole_write_input(
+                    base_dir_win=model_dir,
+                    model=m,
+                    cpoint=cpoint,
+                    cvect=cvect,
+                    sample=sample,
+                    endrad=endrad,
+                    radius_filename=radius_file,
                 )
-                cvect = (
-                    float(hole_cvx_var.get()),
-                    float(hole_cvy_var.get()),
-                    float(hole_cvz_var.get()),
-                )
-                sample = float(hole_sample_var.get())
-                endrad = float(hole_endrad_var.get())
-            except ValueError:
-                messagebox.showerror("参数错误", "cpoint/cvect/sample/endrad 请输入数字。")
+            except Exception as e:
+                messagebox.showerror("生成失败", f"写入 {m} 的 HOLE 输入时出错：\n{e}")
                 return
 
-            radius_file = hole_radius_var.get().strip() or "simple.rad"
-            hole_cmd = hole_cmd_var.get().strip()
-            run_flag = bool(hole_run_var.get())
-            parse_flag = bool(hole_parse_var.get())
-
+        if run_flag:
             for m in models:
-                model_dir = os.path.join(base_dir, f"{m}-HOLE")
-                os.makedirs(model_dir, exist_ok=True)
-
-                src_pdb = os.path.join(base_dir, f"{m}.pdb")
-                if not os.path.exists(src_pdb):
-                    messagebox.showerror(
-                        "缺少 PDB",
-                        f"找不到 {m} 的 PDB 文件：\n{src_pdb}\n请先点击“从 WT+突变体准备 HOLE PDB”。",
-                    )
-                    return
-
-                dst_pdb = os.path.join(model_dir, f"{m}.pdb")
                 try:
-                    shutil.copy2(src_pdb, dst_pdb)
-                except Exception as e:
-                    messagebox.showerror("复制失败", f"复制 {m} 的 PDB 到子目录时出错：\n{e}")
-                    return
-
-                radius_src = os.path.join(base_dir, radius_file)
-                if os.path.isfile(radius_src):
-                    try:
-                        shutil.copy2(radius_src, os.path.join(model_dir, radius_file))
-                    except Exception:
-                        pass
-
-                try:
-                    hole_write_input(
-                        base_dir_win=model_dir,
+                    hole_run_in_wsl(
+                        base_dir_win=os.path.join(base_dir, f"{m}-HOLE"),
                         model=m,
-                        cpoint=cpoint,
-                        cvect=cvect,
-                        sample=sample,
-                        endrad=endrad,
-                        radius_filename=radius_file,
+                        hole_cmd=hole_cmd,
                     )
                 except Exception as e:
-                    messagebox.showerror("生成失败", f"写入 {m} 的 HOLE 输入时出错：\n{e}")
+                    messagebox.showerror("HOLE 运行失败", f"{m} 出错：{e}")
                     return
 
-            if run_flag:
-                for m in models:
-                    try:
-                        hole_run_in_wsl(
-                            base_dir_win=os.path.join(base_dir, f"{m}-HOLE"),
-                            model=m,
-                            hole_cmd=hole_cmd,
-                        )
-                    except Exception as e:
-                        messagebox.showerror("HOLE 运行失败", f"{m} 出错：{e}")
-                        return
+        summary_msg = []
+        if parse_flag:
+            logs = {}
+            for m in models:
+                log_path = os.path.join(base_dir, f"{m}-HOLE", f"{m}_hole.log")
+                if os.path.exists(log_path):
+                    logs[m] = log_path
+                else:
+                    summary_msg.append(f"警告：没找到 {m}_hole.log，跳过。")
 
-            summary_msg = []
-            if parse_flag:
-                logs = {}
-                for m in models:
-                    log_path = os.path.join(base_dir, f"{m}-HOLE", f"{m}_hole.log")
-                    if os.path.exists(log_path):
-                        logs[m] = log_path
-                    else:
-                        summary_msg.append(f"警告：没找到 {m}_hole.log，跳过。")
+            if logs:
+                try:
+                    hole_summarize_logs(logs, base_dir)
+                    fig_path = hole_plot_profiles(logs, base_dir)
+                    summary_msg.append(
+                        "已生成：hole_profile_samples.csv, hole_min_table.csv, "
+                        "hole_min_summary.csv, "
+                        f"{os.path.basename(fig_path)}"
+                    )
+                except Exception as e:
+                    messagebox.showerror("后处理失败", f"解析 log 或绘图时出错：\n{e}")
+                    return
 
-                if logs:
-                    try:
-                        hole_summarize_logs(logs, base_dir)
-                        fig_path = hole_plot_profiles(logs, base_dir)
-                        summary_msg.append(
-                            "已生成：hole_profile_samples.csv, hole_min_table.csv, "
-                            "hole_min_summary.csv, "
-                            f"{os.path.basename(fig_path)}"
-                        )
-                    except Exception as e:
-                        messagebox.showerror("后处理失败", f"解析 log 或绘图时出错：\n{e}")
-                        return
+        msg_lines = [
+            "已为下列模型生成 HOLE 输入文件：",
+            ", ".join(models),
+        ]
+        if run_flag:
+            msg_lines.append("已尝试在 WSL 中运行 HOLE。")
+        if summary_msg:
+            msg_lines.append("")
+            msg_lines.extend(summary_msg)
 
-            msg_lines = [
-                "已为下列模型生成 HOLE 输入文件：",
-                ", ".join(models),
-            ]
-            if run_flag:
-                msg_lines.append("已尝试在 WSL 中运行 HOLE。")
-            if summary_msg:
-                msg_lines.append("")
-                msg_lines.extend(summary_msg)
+        messagebox.showinfo("HOLE 管道完成", "\n".join(msg_lines))
 
-            messagebox.showinfo("HOLE 管道完成", "\n".join(msg_lines))
-            return
-
-        # ===== 研究模式 =====
+    def generate_research_cxc(wt_pdb: str):
         mutants = []
         for idx, row in enumerate(mutant_rows, start=1):
             label = row["label_var"].get().strip() or f"MUT{idx}"
@@ -1634,6 +1330,20 @@ def create_gui():
         )
         messagebox.showinfo("完成", msg)
 
+    def on_generate():
+        wt_pdb = wt_path_var.get().strip()
+        if not wt_pdb:
+            messagebox.showerror("缺少 WT", "请先选择 WT 的 PDB 文件。")
+            return
+
+        mode = mode_var.get()
+
+        if mode == "research":
+            return generate_research_cxc(wt_pdb)
+        if mode == "mutate":
+            return generate_mutation_cxc(wt_pdb)
+        if mode == "hole":
+            return run_hole_pipeline()
     def on_plot_hole_metrics():
         base_dir = hole_base_dir_var.get().strip()
         if not base_dir:
@@ -2000,26 +1710,6 @@ def create_gui():
 
     return root
 
-class ScrollableFrame(tk.Frame):
-    def __init__(self, container, *args, height=280, **kwargs):
-        super().__init__(container, *args, **kwargs)
-
-        canvas = tk.Canvas(self, height=height)
-        scrollbar = tk.Scrollbar(self, orient="vertical", command=canvas.yview)
-        self.scrollable_frame = tk.Frame(canvas)
-
-        self.scrollable_frame.bind(
-            "<Configure>",
-            lambda e: canvas.configure(
-                scrollregion=canvas.bbox("all")
-            )
-        )
-
-        canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
-
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
 
 if __name__ == "__main__":
     app = create_gui()
