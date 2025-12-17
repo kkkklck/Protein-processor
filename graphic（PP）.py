@@ -839,155 +839,27 @@ def create_gui():
     ).grid(row=1, column=0, columnspan=3, padx=5, pady=(6, 0))
 
     # ===== HOLE 管道配置 =====
-    hole_frame = tk.LabelFrame(hole_container, text="HOLE 管道配置", padx=8, pady=8)
-    hole_frame.pack(fill="x", padx=10, pady=5)
-    hole_frame.grid_columnconfigure(1, weight=1)
-    hole_frame.grid_columnconfigure(3, weight=1)
-
     hole_base_dir_var = tk.StringVar(value=r"D:\demo\hole")
-    tk.Label(hole_frame, text="HOLE 工作目录：").grid(row=0, column=0, sticky="w")
-    tk.Entry(hole_frame, textvariable=hole_base_dir_var, width=60).grid(row=0, column=1, columnspan=2, sticky="we")
-
-    def browse_hole_dir():
-        path = filedialog.askdirectory(title="选择 HOLE 工作目录")
-        if path:
-            hole_base_dir_var.set(path)
-
-    tk.Button(hole_frame, text="浏览", command=browse_hole_dir).grid(row=0, column=3, padx=5)
-
     hole_models_var = tk.StringVar(value="WT,DMI,DMT,GT,ND")
-    tk.Label(hole_frame, text="模型列表（逗号分隔）：").grid(row=1, column=0, sticky="w", pady=(6, 0))
-    tk.Entry(hole_frame, textvariable=hole_models_var, width=60).grid(row=1, column=1, columnspan=3, sticky="we", pady=(6, 0))
-
     hole_cpx_var = tk.StringVar(value="38.30")
     hole_cpy_var = tk.StringVar(value="7.55")
     hole_cpz_var = tk.StringVar(value="-22.15")
     hole_cvx_var = tk.StringVar(value="0.0")
     hole_cvy_var = tk.StringVar(value="0.0")
     hole_cvz_var = tk.StringVar(value="1.0")
-
-    tk.Label(hole_frame, text="cpoint (Å)：").grid(row=2, column=0, sticky="w", pady=(6, 0))
-    tk.Entry(hole_frame, textvariable=hole_cpx_var, width=8).grid(row=2, column=1, sticky="w", pady=(6, 0))
-    tk.Entry(hole_frame, textvariable=hole_cpy_var, width=8).grid(row=2, column=2, sticky="w", pady=(6, 0))
-    tk.Entry(hole_frame, textvariable=hole_cpz_var, width=8).grid(row=2, column=3, sticky="w", pady=(6, 0))
-
-    tk.Label(hole_frame, text="cvect：").grid(row=3, column=0, sticky="w", pady=(6, 0))
-    tk.Entry(hole_frame, textvariable=hole_cvx_var, width=8).grid(row=3, column=1, sticky="w", pady=(6, 0))
-    tk.Entry(hole_frame, textvariable=hole_cvy_var, width=8).grid(row=3, column=2, sticky="w", pady=(6, 0))
-    tk.Entry(hole_frame, textvariable=hole_cvz_var, width=8).grid(row=3, column=3, sticky="w", pady=(6, 0))
-
     hole_sample_var = tk.StringVar(value="0.25")
     hole_endrad_var = tk.StringVar(value="15.0")
-    tk.Label(hole_frame, text="sample (Å)：").grid(row=4, column=0, sticky="w", pady=(6, 0))
-    tk.Entry(hole_frame, textvariable=hole_sample_var, width=8).grid(row=4, column=1, sticky="w", pady=(6, 0))
-    tk.Label(hole_frame, text="endrad (Å)：").grid(row=4, column=2, sticky="w", pady=(6, 0))
-    tk.Entry(hole_frame, textvariable=hole_endrad_var, width=8).grid(row=4, column=3, sticky="w", pady=(6, 0))
-
     hole_radius_var = tk.StringVar(value="simple.rad")
-    tk.Label(hole_frame, text="radius 文件名：").grid(row=5, column=0, sticky="w", pady=(6, 0))
-    tk.Entry(hole_frame, textvariable=hole_radius_var, width=20).grid(row=5, column=1, sticky="w", pady=(6, 0))
-
-    # 默认留空，让后台自动选择如何调用 HOLE
     hole_cmd_var = tk.StringVar(value="")
-    tk.Label(hole_frame, text="HOLE 命令（可留空）：").grid(row=6, column=0, sticky="w", pady=(6, 0))
-    tk.Entry(hole_frame, textvariable=hole_cmd_var, width=24).grid(row=6, column=1, sticky="w", pady=(6, 0))
-
     hole_run_var = tk.IntVar(value=0)
     hole_parse_var = tk.IntVar(value=1)
-    tk.Checkbutton(
-        hole_frame,
-        text="自动在 WSL 中调用 HOLE",
-        variable=hole_run_var,
-    ).grid(row=7, column=0, columnspan=2, sticky="w", pady=(8, 0))
-    tk.Checkbutton(
-        hole_frame,
-        text="根据 *_hole.log 生成 CSV & 曲线图",
-        variable=hole_parse_var,
-    ).grid(row=7, column=2, columnspan=2, sticky="w", pady=(8, 0))
-
-    def on_prepare_hole_pdb():
-        """从 WT + 突变体列表，把对应 PDB 复制到 HOLE 工作目录，命名为 <模型名>.pdb。"""
-        base_dir = hole_base_dir_var.get().strip()
-        if not base_dir:
-            messagebox.showerror("缺少 HOLE 目录", "请先在 HOLE 区设置“HOLE 工作目录”。")
-            return
-
-        models_str = hole_models_var.get().strip()
-        if not models_str:
-            messagebox.showerror("缺少模型列表", "请先在 HOLE 区设置模型列表，比如 WT,DMI,DMT,GT,ND。")
-            return
-
-        models = [m.strip() for m in models_str.split(",") if m.strip()]
-        if not models:
-            messagebox.showerror("无模型", "模型列表似乎是空的。")
-            return
-
-        mapping = {}
-
-        if "WT" in models:
-            wt_path = wt_path_var.get().strip()
-            if not wt_path:
-                messagebox.showerror("缺少 WT PDB", "模型列表包含 WT，但上面没有选择 WT PDB。")
-                return
-            if not os.path.exists(wt_path):
-                messagebox.showerror("WT PDB 不存在", f"找不到 WT PDB 文件：\n{wt_path}")
-                return
-            mapping["WT"] = wt_path
-
-        label_to_pdb = {}
-        for idx, row in enumerate(mutant_rows, start=1):
-            label = (row["label_var"].get() or "").strip()
-            pdb = (row["pdb_var"].get() or "").strip()
-            if not label or not pdb:
-                continue
-            label_to_pdb[label] = pdb
-
-        for m in models:
-            if m == "WT":
-                continue
-            pdb_path = label_to_pdb.get(m)
-            if not pdb_path:
-                messagebox.showerror(
-                    "缺少突变体 PDB",
-                    f"模型列表包含 {m}，但在“突变体 PDB”区没有找到同名标签的行，"
-                    "请确保突变体标签和模型名一模一样。"
-                )
-                return
-            if not os.path.exists(pdb_path):
-                messagebox.showerror("PDB 文件不存在", f"{m} 对应的 PDB 不存在：\n{pdb_path}")
-                return
-            mapping[m] = pdb_path
-
-        os.makedirs(base_dir, exist_ok=True)
-
-        for label, src in mapping.items():
-            dst = os.path.join(base_dir, f"{label}.pdb")
-            try:
-                shutil.copy2(src, dst)
-            except Exception as e:
-                messagebox.showerror("复制失败", f"复制 {label} 时出错：\n{e}")
-                return
-
-        msg = (
-            "已把 WT + 突变体 PDB 复制到 HOLE 工作目录：\n"
-            f"{base_dir}\n\n"
-            "文件名统一为：<模型名>.pdb。"
-        )
-        messagebox.showinfo("准备完成", msg)
-
-    tk.Button(
-        hole_frame,
-        text="从 WT+突变体准备 HOLE PDB",
-        command=on_prepare_hole_pdb,
-    ).grid(row=8, column=0, columnspan=4, sticky="w", pady=(8, 0))
-
-    # ===== 自动推荐 cpoint / cvect 小工具 =====
-    axis_frame = tk.LabelFrame(hole_frame, text="自动推荐 cpoint / cvect", padx=8, pady=8)
-    axis_frame.grid(row=9, column=0, columnspan=4, sticky="we", pady=(10, 0))
 
     axis_chain_var = tk.StringVar(value="A")
     axis_res_expr_var = tk.StringVar(value="")
     axis_log_var = tk.StringVar(value="axis_axis.log")
+
+    axis_frame = tk.LabelFrame(hole_container, text="自动推荐 cpoint / cvect", padx=8, pady=8)
+    axis_frame.pack(fill="x", padx=10, pady=5)
 
     tk.Label(axis_frame, text="链 ID：").grid(row=0, column=0, sticky="w")
     tk.Entry(axis_frame, textvariable=axis_chain_var, width=5).grid(row=0, column=1, sticky="w")
@@ -1075,6 +947,132 @@ def create_gui():
         text="从 axis log 填入 cpoint/cvect",
         command=on_fill_cpoint_from_axis_log,
     ).grid(row=2, column=2, columnspan=2, sticky="w", pady=(6, 0))
+
+    hole_frame = tk.LabelFrame(hole_container, text="HOLE 管道配置", padx=8, pady=8)
+    hole_frame.pack(fill="x", padx=10, pady=5)
+    hole_frame.grid_columnconfigure(1, weight=1)
+    hole_frame.grid_columnconfigure(3, weight=1)
+
+    tk.Label(hole_frame, text="HOLE 工作目录：").grid(row=0, column=0, sticky="w")
+    tk.Entry(hole_frame, textvariable=hole_base_dir_var, width=60).grid(row=0, column=1, columnspan=2, sticky="we")
+
+    def browse_hole_dir():
+        path = filedialog.askdirectory(title="选择 HOLE 工作目录")
+        if path:
+            hole_base_dir_var.set(path)
+
+    tk.Button(hole_frame, text="浏览", command=browse_hole_dir).grid(row=0, column=3, padx=5)
+
+    tk.Label(hole_frame, text="模型列表（逗号分隔）：").grid(row=1, column=0, sticky="w", pady=(6, 0))
+    tk.Entry(hole_frame, textvariable=hole_models_var, width=60).grid(row=1, column=1, columnspan=3, sticky="we", pady=(6, 0))
+
+    tk.Label(hole_frame, text="cpoint (Å)：").grid(row=2, column=0, sticky="w", pady=(6, 0))
+    tk.Entry(hole_frame, textvariable=hole_cpx_var, width=8).grid(row=2, column=1, sticky="w", pady=(6, 0))
+    tk.Entry(hole_frame, textvariable=hole_cpy_var, width=8).grid(row=2, column=2, sticky="w", pady=(6, 0))
+    tk.Entry(hole_frame, textvariable=hole_cpz_var, width=8).grid(row=2, column=3, sticky="w", pady=(6, 0))
+
+    tk.Label(hole_frame, text="cvect：").grid(row=3, column=0, sticky="w", pady=(6, 0))
+    tk.Entry(hole_frame, textvariable=hole_cvx_var, width=8).grid(row=3, column=1, sticky="w", pady=(6, 0))
+    tk.Entry(hole_frame, textvariable=hole_cvy_var, width=8).grid(row=3, column=2, sticky="w", pady=(6, 0))
+    tk.Entry(hole_frame, textvariable=hole_cvz_var, width=8).grid(row=3, column=3, sticky="w", pady=(6, 0))
+
+    tk.Label(hole_frame, text="sample (Å)：").grid(row=4, column=0, sticky="w", pady=(6, 0))
+    tk.Entry(hole_frame, textvariable=hole_sample_var, width=8).grid(row=4, column=1, sticky="w", pady=(6, 0))
+    tk.Label(hole_frame, text="endrad (Å)：").grid(row=4, column=2, sticky="w", pady=(6, 0))
+    tk.Entry(hole_frame, textvariable=hole_endrad_var, width=8).grid(row=4, column=3, sticky="w", pady=(6, 0))
+
+    tk.Label(hole_frame, text="radius 文件名：").grid(row=5, column=0, sticky="w", pady=(6, 0))
+    tk.Entry(hole_frame, textvariable=hole_radius_var, width=20).grid(row=5, column=1, sticky="w", pady=(6, 0))
+
+    tk.Label(hole_frame, text="HOLE 命令（可留空）：").grid(row=6, column=0, sticky="w", pady=(6, 0))
+    tk.Entry(hole_frame, textvariable=hole_cmd_var, width=24).grid(row=6, column=1, sticky="w", pady=(6, 0))
+
+    tk.Checkbutton(
+        hole_frame,
+        text="自动在 WSL 中调用 HOLE",
+        variable=hole_run_var,
+    ).grid(row=7, column=0, columnspan=2, sticky="w", pady=(8, 0))
+    tk.Checkbutton(
+        hole_frame,
+        text="根据 *_hole.log 生成 CSV & 曲线图",
+        variable=hole_parse_var,
+    ).grid(row=7, column=2, columnspan=2, sticky="w", pady=(8, 0))
+
+    def on_prepare_hole_pdb():
+        """从 WT + 突变体列表，把对应 PDB 复制到 HOLE 工作目录，命名为 <模型名>.pdb。"""
+        base_dir = hole_base_dir_var.get().strip()
+        if not base_dir:
+            messagebox.showerror("缺少 HOLE 目录", "请先在 HOLE 区设置“HOLE 工作目录”。")
+            return
+
+        models_str = hole_models_var.get().strip()
+        if not models_str:
+            messagebox.showerror("缺少模型列表", "请先在 HOLE 区设置模型列表，比如 WT,DMI,DMT,GT,ND。")
+            return
+
+        models = [m.strip() for m in models_str.split(",") if m.strip()]
+        if not models:
+            messagebox.showerror("无模型", "模型列表似乎是空的。")
+            return
+
+        mapping = {}
+
+        if "WT" in models:
+            wt_path = wt_path_var.get().strip()
+            if not wt_path:
+                messagebox.showerror("缺少 WT PDB", "模型列表包含 WT，但上面没有选择 WT PDB。")
+                return
+            if not os.path.exists(wt_path):
+                messagebox.showerror("WT PDB 不存在", f"找不到 WT PDB 文件：\n{wt_path}")
+                return
+            mapping["WT"] = wt_path
+
+        label_to_pdb = {}
+        for idx, row in enumerate(mutant_rows, start=1):
+            label = (row["label_var"].get() or "").strip()
+            pdb = (row["pdb_var"].get() or "").strip()
+            if not label or not pdb:
+                continue
+            label_to_pdb[label] = pdb
+
+        for m in models:
+            if m == "WT":
+                continue
+            pdb_path = label_to_pdb.get(m)
+            if not pdb_path:
+                messagebox.showerror(
+                    "缺少突变体 PDB",
+                    f"模型列表包含 {m}，但在“突变体 PDB”区没有找到同名标签的行，"
+                    "请确保突变体标签和模型名一模一样。"
+                )
+                return
+            if not os.path.exists(pdb_path):
+                messagebox.showerror("PDB 文件不存在", f"{m} 对应的 PDB 不存在：\n{pdb_path}")
+                return
+            mapping[m] = pdb_path
+
+        os.makedirs(base_dir, exist_ok=True)
+
+        for label, src in mapping.items():
+            dst = os.path.join(base_dir, f"{label}.pdb")
+            try:
+                shutil.copy2(src, dst)
+            except Exception as e:
+                messagebox.showerror("复制失败", f"复制 {label} 时出错：\n{e}")
+                return
+
+        msg = (
+            "已把 WT + 突变体 PDB 复制到 HOLE 工作目录：\n"
+            f"{base_dir}\n\n"
+            "文件名统一为：<模型名>.pdb。"
+        )
+        messagebox.showinfo("准备完成", msg)
+
+    tk.Button(
+        hole_frame,
+        text="从 WT+突变体准备 HOLE PDB",
+        command=on_prepare_hole_pdb,
+    ).grid(row=8, column=0, columnspan=4, sticky="w", pady=(8, 0))
 
     # ===== 生成按钮 =====
     def generate_mutation_cxc(wt_pdb: str):
