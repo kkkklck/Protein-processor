@@ -1,12 +1,12 @@
 """
-msa_osakt2_tool.py
+msa_consensus_tool.py
 ==================
 
 给 PP.py 的 "MSA 候选位点" 用的本地工具模块（不是 pip 库）。
 核心能力：
 1) 读取 Clustal/Clustal-Omega 的 .aln 对齐文件
 2) 导出一个可读的 alignment view CSV（每列一个对齐位点）
-3) 基于“多数派共识”给 OsAKT2（或自动识别的参考序列）生成候选突变位点表
+3) 基于“多数派共识”为自动识别的参考序列生成候选突变位点表（默认偏好 AKT2/OsAKT2 等命名）
 
 设计目标：稳、可解释、出错也能给出清晰报错信息。
 """
@@ -29,7 +29,7 @@ class AlignmentParseError(RuntimeError):
 
 
 class ReferenceNotFoundError(RuntimeError):
-    """找不到参考序列（例如 OsAKT2）"""
+    """找不到参考序列（例如 默认偏好的 AKT2 系列）"""
 
 
 # ----------------------------- Data model -----------------------------
@@ -165,7 +165,7 @@ def _pick_reference(msa: MSA, prefer_patterns: Optional[Sequence[str]] = None) -
     """
     自动挑参考序列。
     prefer_patterns: 按优先级匹配的关键词列表（大小写不敏感）。
-    默认会优先尝试匹配 OsAKT2 / AKT2_ORY / OSAKT2 / 'AKT2' 等。
+    默认会优先尝试匹配 AKT2/OsAKT2（AKT2_ORY / OSAKT2 / 'AKT2' 等常见别名）。
     """
     if prefer_patterns is None:
         prefer_patterns = [
@@ -500,7 +500,10 @@ def _main(argv: Optional[Sequence[str]] = None) -> int:
     import argparse
 
     ap = argparse.ArgumentParser(
-        description="OsAKT2 MSA helper: export alignment view and suggest candidate mutation sites."
+        description=(
+            "MSA consensus helper: export alignment view and suggest candidate mutation sites "
+            "(defaults prefer AKT2-like reference names)."
+        )
     )
     ap.add_argument("aln", help="Clustal alignment file (.aln)")
     ap.add_argument("--ref", default=None, help="reference sequence name (default: auto)")
