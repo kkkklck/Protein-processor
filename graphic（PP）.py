@@ -1653,7 +1653,7 @@ def create_gui():
 
     cross_frame = tk.LabelFrame(
         summary_tab,
-        text="A：Cross contacts 定量（P-loop ↔ S6）",
+        text="Cross contacts 定量（P-loop ↔ S6）",
         padx=8,
         pady=8,
     )
