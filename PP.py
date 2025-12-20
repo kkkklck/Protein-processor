@@ -24,7 +24,7 @@ except Exception:  # pragma: no cover - optional dep
     _PDBParser = None
 
 try:
-    from msa_osakt2_tool import export_alignment_view, suggest_candidates
+    from msa_consensus_tool import export_alignment_view, suggest_candidates
 except ImportError:  # pragma: no cover - optional dep
     export_alignment_view = None
     suggest_candidates = None
@@ -110,7 +110,7 @@ def _parse_clustal_alignment(aln_path: Path) -> Tuple[List[str], List[str]]:
 
 
 def _choose_reference(seq_names: List[str]) -> str:
-    """选择参考序列：优先 OsAKT2，其次 AKT2_ORYS/ORYSJ，最后第一个。"""
+    """选择参考序列：优先 AKT2/OsAKT2 相关命名，其次 AKT2_ORYS/ORYSJ，最后第一个。"""
 
     if not seq_names:
         raise ValueError("序列列表为空，无法选择参考序列。")
@@ -705,13 +705,13 @@ def make_stage3_table(out_dir: str, pick_models: List[str] | None = None) -> str
     df.to_csv(out_path, index=False, encoding="utf-8-sig")
     return out_path
 
-def run_osakt2_msa(
+def run_msa_consensus(
         fasta_path: str,
         clustalo_cmd: str = "clustalo",
 ) -> Tuple[str, str, str]:
     """
     给定一个多序列 FASTA，调用 Clustal-Omega 生成 .aln，
-    再用 msa_osakt2_tool 导出 alignment_osakt2_view.csv 和 candidate_sites_auto_v0.1.csv。
+    再用 msa_consensus_tool 导出 alignment_view.csv 和 candidate_sites_auto_v0.1.csv。
 
     返回 (aln_path, view_csv, cand_csv) 三个路径字符串。
     """
@@ -721,7 +721,7 @@ def run_osakt2_msa(
         raise FileNotFoundError(f"找不到 FASTA 文件：{fasta}")
 
     out_dir = fasta.parent
-    aln_path = out_dir / f"{fasta.stem}_OsAKT2.aln"
+    aln_path = out_dir / f"{fasta.stem}_msa.aln"
 
     cmd = [
         clustalo_cmd,
@@ -739,7 +739,7 @@ def run_osakt2_msa(
             f"STDOUT:\n{result.stdout}\n\nSTDERR:\n{result.stderr}"
         )
 
-    view_csv = out_dir / "alignment_osakt2_view.csv"
+    view_csv = out_dir / "alignment_view.csv"
     cand_csv = out_dir / "candidate_sites_auto_v0.1.csv"
 
     if export_alignment_view and suggest_candidates:
@@ -752,12 +752,12 @@ def run_osakt2_msa(
     return str(aln_path), str(view_csv), str(cand_csv)
 
 
-def run_osakt2_msa_wsl(fasta_path_win: str) -> Tuple[str, str, str]:
+def run_msa_consensus_wsl(fasta_path_win: str) -> Tuple[str, str, str]:
     """
     在 WSL 里用 Clustal-Omega 对 fasta_path_win 对应的多序列做比对，
-    然后在 Windows 里用 msa_osakt2_tool 导出：
-      1) XXX_OsAKT2.aln
-      2) alignment_osakt2_view.csv
+    然后在 Windows 里用 msa_consensus_tool 导出：
+      1) XXX_consensus.aln
+      2) alignment_view.csv
       3) candidate_sites_auto_v0.1.csv
 
     返回值（三个 Windows 路径，全是 str）：
@@ -771,7 +771,7 @@ def run_osakt2_msa_wsl(fasta_path_win: str) -> Tuple[str, str, str]:
     base_dir_win = str(fasta_path.parent)
     fasta_name = fasta_path.name
     stem = fasta_path.stem
-    aln_name = f"{stem}_OsAKT2.aln"
+    aln_name = f"{stem}_msa.aln"
 
     base_dir_wsl = hole_win_to_wsl(base_dir_win)
     exe = (CLUSTALO_WSL_EXE or "clustalo").strip()
@@ -798,7 +798,7 @@ def run_osakt2_msa_wsl(fasta_path_win: str) -> Tuple[str, str, str]:
     aln_path_win = str(fasta_path.with_name(aln_name))
     out_dir = fasta_path.parent
 
-    view_csv = out_dir / "alignment_osakt2_view.csv"
+    view_csv = out_dir / "alignment_view.csv"
     cand_csv = out_dir / "candidate_sites_auto_v0.1.csv"
 
     if export_alignment_view and suggest_candidates:
@@ -809,6 +809,7 @@ def run_osakt2_msa_wsl(fasta_path_win: str) -> Tuple[str, str, str]:
         _suggest_candidates_fallback(Path(aln_path_win), cand_csv)
 
     return aln_path_win, str(view_csv), str(cand_csv)
+
 def _extract_plddt_from_pdb(pdb_path: Path):
     """返回该 pdb 的逐残基 pLDDT 列表：[{chain, resi, resn, plddt}, ...]"""
 
@@ -919,7 +920,7 @@ def short_model_label(model: str) -> str:
     """
     尽量把模型名缩短：
       - 取第一个 '_' 前的部分：E174A_single → E174A
-      - OsAKT2_WT → WT（你要的话可以单独再特判）
+      - OsAKT2_WT → WT
     """
 
     m = str(model)
