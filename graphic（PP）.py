@@ -18,7 +18,7 @@ from PP import (
     merge_all_metrics,
     score_metrics_file,
     make_stage3_table,
-    run_osakt2_msa_wsl,
+    run_msa_consensus_wsl,
     organize_outputs,
     cleanup_minimal,
     OUTPUT_POLICIES,
@@ -779,7 +779,7 @@ def create_gui():
     # ===== MSA 自动候选 =====
     msa_frame = tk.LabelFrame(
         msa_tab,
-        text="MSA 自动候选小工具（Clustal-Omega + OsAKT2）",
+        text="MSA 自动候选小工具（Clustal-Omega + 共识筛选）",
         padx=8,
         pady=8,
     )
@@ -814,7 +814,7 @@ def create_gui():
             return
 
         try:
-            aln_path, view_csv, cand_csv = run_osakt2_msa_wsl(fasta)
+            aln_path, view_csv, cand_csv = run_msa_consensus_wsl(fasta)
         except Exception as e:
             messagebox.showerror(
                 "MSA 失败",
