@@ -953,7 +953,7 @@ def _get_residue_atom_coords(
                 for res in chain:
                     if res.id[0] != " ":
                         continue
-                        resi = res.id[1]
+                    resi = res.id[1]
                     if resi not in resi_set:
                         continue
                     for atom in res.get_atoms():
@@ -1063,6 +1063,8 @@ def append_cross_contact_metrics(
         group_a_expr: str = "283,286,291",
         group_b_expr: str = "298-300",
         cutoff: float = 4.0,
+        write_tables: bool = True,
+        summary_csv: str | None = None,
 ) -> str:
     """
     追加 P-loop ↔ S6 跨域接触指标到 metrics_all / metrics_scored / stage3_table。
@@ -1076,18 +1078,26 @@ def append_cross_contact_metrics(
     if not out_dir:
         raise ValueError("out_dir 不能为空")
 
+    pdb_dir = pdb_dir.strip() if pdb_dir else None
+    chain_id = (chain_id or "A").strip()
+
     metrics_all = find_table(out_dir, "metrics_all.csv")
-    if not os.path.isfile(metrics_all):
-        raise FileNotFoundError(f"找不到 metrics_all.csv：{metrics_all}")
 
     group_a = _parse_resi_expr(group_a_expr)
     group_b = _parse_resi_expr(group_b_expr)
     if not group_a or not group_b:
         raise ValueError("group_a_expr/group_b_expr 不能为空或解析失败。")
 
-    df = _pd.read_csv(metrics_all)
+    if os.path.isfile(metrics_all):
+        base_df = _pd.read_csv(metrics_all)
+        models = base_df["Model"].astype(str).tolist()
+    else:
+        if not pdb_dir:
+            raise FileNotFoundError("找不到 metrics_all.csv，且未提供 pdb_dir 扫描模型。")
+        models = sorted({Path(p).stem for p in glob.glob(os.path.join(pdb_dir, "*.pdb"))})
+
     rows = []
-    for model in df["Model"].astype(str).tolist():
+    for model in models:
         pdb_path = _find_model_pdb(out_dir, pdb_dir, model)
         if not pdb_path:
             print(f"[Warning] 未找到模型 PDB: {model}")
@@ -1119,52 +1129,63 @@ def append_cross_contact_metrics(
         )
 
     cross_df = _pd.DataFrame(rows)
-    df = df.drop(columns=[c for c in cross_df.columns if c != "Model" and c in df.columns])
-    df = df.merge(cross_df, on="Model", how="left")
-    df.to_csv(metrics_all, index=False, encoding="utf-8-sig")
+    if summary_csv:
+        summary_dir = os.path.dirname(summary_csv)
+        if summary_dir:
+            os.makedirs(summary_dir, exist_ok=True)
+        cross_df.to_csv(summary_csv, index=False, encoding="utf-8-sig")
 
-    scored_path = find_table(out_dir, "metrics_scored.csv")
-    if os.path.isfile(scored_path):
-        scored_df = _pd.read_csv(scored_path)
-        scored_df = scored_df.drop(
-            columns=[c for c in cross_df.columns if c != "Model" and c in scored_df.columns]
-        )
-        scored_df = scored_df.merge(cross_df, on="Model", how="left")
-        scored_df.to_csv(scored_path, index=False, encoding="utf-8-sig")
+    if write_tables:
+        if not os.path.isfile(metrics_all):
+            raise FileNotFoundError("write_tables=True 但 metrics_all.csv 不存在，请先生成 metrics_all.csv")
 
-    stage3_path = find_table(out_dir, "stage3_table.csv")
-    if os.path.isfile(stage3_path):
-        stage3_df = _pd.read_csv(stage3_path)
-        stage3_df = stage3_df.drop(
-            columns=[c for c in cross_df.columns if c != "Model" and c in stage3_df.columns]
-        )
-        stage3_df = stage3_df.merge(cross_df, on="Model", how="left")
-        if "Contacts_Qualitative" not in stage3_df.columns:
-            stage3_df["Contacts_Qualitative"] = ""
-        labels = stage3_df["Model"].map(
-            cross_df.set_index("Model")["CrossContactPairs"]
-        )
-        min_dists = stage3_df["Model"].map(
-            cross_df.set_index("Model")["CrossContactMinDist"]
-        )
+        df = _pd.read_csv(metrics_all)
+        df = df.drop(columns=[c for c in cross_df.columns if c != "Model" and c in df.columns])
+        df = df.merge(cross_df, on="Model", how="left")
+        df.to_csv(metrics_all, index=False, encoding="utf-8-sig")
 
-        def _fill_label(row) -> str:
-            current = row.get("Contacts_Qualitative", "")
-            if isinstance(current, str) and current.strip():
-                return current
-            pairs = row.get("_pairs")
-            min_dist = row.get("_min")
-            if _pd.isna(pairs):
-                return ""
-            return _contacts_label(int(pairs), float(min_dist))
+        scored_path = find_table(out_dir, "metrics_scored.csv")
+        if os.path.isfile(scored_path):
+            scored_df = _pd.read_csv(scored_path)
+            scored_df = scored_df.drop(
+                columns=[c for c in cross_df.columns if c != "Model" and c in scored_df.columns]
+            )
+            scored_df = scored_df.merge(cross_df, on="Model", how="left")
+            scored_df.to_csv(scored_path, index=False, encoding="utf-8-sig")
 
-        stage3_df["_pairs"] = labels
-        stage3_df["_min"] = min_dists
-        stage3_df["Contacts_Qualitative"] = stage3_df.apply(_fill_label, axis=1)
-        stage3_df = stage3_df.drop(columns=["_pairs", "_min"])
-        stage3_df.to_csv(stage3_path, index=False, encoding="utf-8-sig")
+        stage3_path = find_table(out_dir, "stage3_table.csv")
+        if os.path.isfile(stage3_path):
+            stage3_df = _pd.read_csv(stage3_path)
+            stage3_df = stage3_df.drop(
+                columns=[c for c in cross_df.columns if c != "Model" and c in stage3_df.columns]
+            )
+            stage3_df = stage3_df.merge(cross_df, on="Model", how="left")
+            if "Contacts_Qualitative" not in stage3_df.columns:
+                stage3_df["Contacts_Qualitative"] = ""
+            labels = stage3_df["Model"].map(
+                cross_df.set_index("Model")["CrossContactPairs"]
+            )
+            min_dists = stage3_df["Model"].map(
+                cross_df.set_index("Model")["CrossContactMinDist"]
+            )
 
-    return metrics_all
+            def _fill_label(row) -> str:
+                current = row.get("Contacts_Qualitative", "")
+                if isinstance(current, str) and current.strip():
+                    return current
+                pairs = row.get("_pairs")
+                min_dist = row.get("_min")
+                if _pd.isna(pairs):
+                    return ""
+                return _contacts_label(int(pairs), float(min_dist))
+
+            stage3_df["_pairs"] = labels
+            stage3_df["_min"] = min_dists
+            stage3_df["Contacts_Qualitative"] = stage3_df.apply(_fill_label, axis=1)
+            stage3_df = stage3_df.drop(columns=["_pairs", "_min"])
+            stage3_df.to_csv(stage3_path, index=False, encoding="utf-8-sig")
+
+    return metrics_all if os.path.isfile(metrics_all) else (summary_csv or "")
 
 
 def short_model_label(model: str) -> str:
