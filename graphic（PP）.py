@@ -20,6 +20,7 @@ from PP import (
     merge_all_metrics,
     score_metrics_file,
     make_stage3_table,
+    append_cross_contact_metrics,
     run_msa_consensus_wsl,
     organize_outputs,
     cleanup_minimal,
@@ -188,6 +189,14 @@ def expected_outputs(ctx):
         )
     )
     out.append(("阶段3", f"{out_dir}/tables/stage3_table.csv", "决策表模板（含图片路径列）"))
+    if ctx.get("cross_contacts_write"):
+        out.append(
+            (
+                "汇总",
+                f"{out_dir}/tables/contacts_cross_summary.csv",
+                "P-loop ↔ S6 跨域接触定量结果",
+            )
+        )
 
     hole_dir = ctx.get("hole_dir") or "<HOLE目录>"
     out.append(("HOLE汇总", f"{hole_dir}/hole_min_table.csv", "每个模型的 r_min/gate_length"))
@@ -1642,6 +1651,114 @@ def create_gui():
         fg="#555"
     ).pack(side="left", padx=10)
 
+    cross_frame = tk.LabelFrame(
+        summary_tab,
+        text="A：Cross contacts 定量（P-loop ↔ S6）",
+        padx=8,
+        pady=8,
+    )
+    cross_frame.pack(fill="x", padx=10, pady=5)
+
+    cross_pdb_dir_var = tk.StringVar()
+    cross_chain_var = tk.StringVar(value="A")
+    cross_group_a_var = tk.StringVar(value="283,286,291")
+    cross_group_b_var = tk.StringVar(value="298-300")
+    cross_cutoff_var = tk.StringVar(value="4.0")
+    cross_write_var = tk.IntVar(value=1)
+
+    tk.Label(cross_frame, text="PDB 文件夹：").grid(row=0, column=0, sticky="w")
+    tk.Entry(cross_frame, textvariable=cross_pdb_dir_var, width=50).grid(
+        row=0, column=1, sticky="w"
+    )
+
+    def browse_cross_pdb_dir():
+        path = filedialog.askdirectory(title="选择 PDB 文件夹")
+        if path:
+            cross_pdb_dir_var.set(path)
+
+    tk.Button(cross_frame, text="浏览", command=browse_cross_pdb_dir).grid(
+        row=0, column=2, padx=5
+    )
+
+    tk.Label(cross_frame, text="chain_id：").grid(row=1, column=0, sticky="w", pady=(6, 0))
+    tk.Entry(cross_frame, textvariable=cross_chain_var, width=6).grid(
+        row=1, column=1, sticky="w", pady=(6, 0)
+    )
+
+    tk.Label(cross_frame, text="P-loop 残基：").grid(
+        row=2, column=0, sticky="w", pady=(6, 0)
+    )
+    tk.Entry(cross_frame, textvariable=cross_group_a_var, width=30).grid(
+        row=2, column=1, sticky="w", pady=(6, 0)
+    )
+
+    tk.Label(cross_frame, text="S6 残基：").grid(row=3, column=0, sticky="w", pady=(6, 0))
+    tk.Entry(cross_frame, textvariable=cross_group_b_var, width=30).grid(
+        row=3, column=1, sticky="w", pady=(6, 0)
+    )
+
+    tk.Label(cross_frame, text="cutoff (Å)：").grid(
+        row=4, column=0, sticky="w", pady=(6, 0)
+    )
+    tk.Entry(cross_frame, textvariable=cross_cutoff_var, width=8).grid(
+        row=4, column=1, sticky="w", pady=(6, 0)
+    )
+
+    tk.Checkbutton(
+        cross_frame,
+        text="写入 metrics_all / stage3_table",
+        variable=cross_write_var,
+    ).grid(row=5, column=0, columnspan=2, sticky="w", pady=(6, 0))
+
+    def on_run_cross_contacts():
+        out_dir = out_dir_var.get().strip()
+        pdb_dir = cross_pdb_dir_var.get().strip()
+        chain_id = cross_chain_var.get().strip() or "A"
+        group_a_expr = cross_group_a_var.get().strip()
+        group_b_expr = cross_group_b_var.get().strip()
+        cutoff_raw = cross_cutoff_var.get().strip()
+
+        if not out_dir:
+            messagebox.showerror("缺少输出目录", "请先设置“图片 / 文本输出目录”。")
+            return
+        if not pdb_dir:
+            messagebox.showerror("缺少 PDB 文件夹", "请设置 PDB 文件夹。")
+            return
+        try:
+            cutoff = float(cutoff_raw)
+        except Exception:
+            messagebox.showerror("cutoff 格式错误", "cutoff 需要是数字（Å）。")
+            return
+
+        summary_csv = os.path.join(out_dir, "tables", "contacts_cross_summary.csv")
+
+        try:
+            append_cross_contact_metrics(
+                out_dir=out_dir,
+                pdb_dir=pdb_dir,
+                chain_id=chain_id,
+                group_a_expr=group_a_expr,
+                group_b_expr=group_b_expr,
+                cutoff=cutoff,
+                write_tables=bool(cross_write_var.get()),
+                summary_csv=summary_csv,
+            )
+        except Exception as e:
+            messagebox.showerror("计算失败", f"Cross contacts 计算出错：\n{e}")
+            return
+
+        msg = f"已生成跨域接触摘要：\n{summary_csv}"
+        if cross_write_var.get():
+            msg += "\n\n并已更新：metrics_all.csv / stage3_table.csv"
+        messagebox.showinfo("Cross contacts 完成", msg)
+
+    tk.Button(
+        cross_frame,
+        text="运行 Cross contacts",
+        command=on_run_cross_contacts,
+        width=20,
+    ).grid(row=6, column=0, pady=(8, 0), sticky="w")
+
     # ===== 突变模式：突变体构建 =====
     mut_builder_frame = tk.LabelFrame(mutate_container, text="突变体构建（swapaa）", padx=8, pady=8)
     mut_builder_frame.pack(fill="x", padx=10, pady=5)
@@ -1754,11 +1871,11 @@ def create_gui():
             "sites_contacts": bool(sites_contacts_var.get()),
             "sites_coulombic": bool(sites_coulombic_var.get()),
             "chain_id": chain_var.get().strip() or "A",
-            "residue_expr": residue_expr_var.get().strip(),
-            "roi_expr": roi_expr_var.get().strip(),
+            "residue_expr": residue_expr_var.get().strip(),            "roi_expr": roi_expr_var.get().strip(),
             "out_dir": out_dir_var.get().strip(),
             "hole_dir": hole_base_dir_var.get().strip(),
             "hole_models": hole_models_var.get().strip(),
+            "cross_contacts_write": bool(cross_write_var.get()),
         }
 
     refresh_outputs = build_outputs_view(sidebar, ctx_getter)
@@ -1788,6 +1905,7 @@ def create_gui():
         residue_expr_var,
         roi_expr_var,
         chain_var,
+        cross_write_var,
     ]:
         try:
             var.trace_add("write", schedule_refresh)
