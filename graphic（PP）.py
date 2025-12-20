@@ -1,6 +1,8 @@
 import csv
+import json
 import os
 import shutil
+from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
@@ -27,6 +29,34 @@ from help_texts import HELP_CONTENT
 
 
 _help_win = None
+APP_NAME = "ProteinPipelineGUI"
+
+
+def _config_path() -> Path:
+    if os.name == "nt" and os.environ.get("APPDATA"):
+        base = Path(os.environ["APPDATA"]) / APP_NAME
+    else:
+        base = Path.home() / ".protein_pipeline_gui"
+    base.mkdir(parents=True, exist_ok=True)
+    return base / "settings.json"
+
+
+def load_settings() -> dict:
+    path = _config_path()
+    try:
+        if path.exists():
+            return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return {}
+
+
+def save_settings(data: dict) -> None:
+    path = _config_path()
+    try:
+        path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
 
 
 def expected_outputs(ctx):
@@ -251,7 +281,7 @@ def _create_card(parent, item):
     return card
 
 
-def build_outputs_tab(frame, ctx_getter):
+def build_outputs_view(frame, ctx_getter):
     top = tk.Frame(frame)
     top.pack(fill="x")
 
@@ -275,6 +305,7 @@ def build_outputs_tab(frame, ctx_getter):
             tree.insert("", "end", values=(typ, path, use))
 
     refresh()
+    return refresh
 
 
 class ScrollableFrame(tk.Frame):
@@ -409,7 +440,7 @@ def open_help_window(root, ctx_getter):
         on_select()
 
     # ==== 输出速查页 ====
-    build_outputs_tab(outputs_tab, ctx_getter)
+    build_outputs_view(outputs_tab, ctx_getter)
 
     win.bind("<F1>", lambda _e: win.lift())
 
@@ -417,10 +448,14 @@ def open_help_window(root, ctx_getter):
 
 def create_gui():
     root = tk.Tk()
-    root.title("ChimeraX .cxc 自动生成器（GUI 版）")
+    root.title("ChimeraX .cxc 自动生成器")
 
-    # 整体窗口稍微宽一点
     root.geometry("900x600")
+
+    settings = load_settings()
+    show_sidebar_var = tk.BooleanVar(
+        master=root, value=bool(settings.get("show_outputs_sidebar", False))
+    )
 
     topbar = tk.Frame(root)
     topbar.pack(side="top", fill="x")
@@ -434,12 +469,37 @@ def create_gui():
     )
     help_btn.pack(side="right", padx=10, pady=6)
 
-    body = tk.Frame(root)
-    body.pack(side="top", fill="both", expand=True)
+    refresh_outputs = lambda: None
+
+    def on_toggle_sidebar():
+        visible = bool(show_sidebar_var.get())
+        if visible:
+            sidebar.pack(side="right", fill="y")
+            refresh_outputs()
+        else:
+            sidebar.pack_forget()
+        settings["show_outputs_sidebar"] = visible
+        save_settings(settings)
+
+    tk.Checkbutton(
+        topbar,
+        text="输出预览",
+        variable=show_sidebar_var,
+        command=on_toggle_sidebar,
+    ).pack(side="right", padx=(0, 6), pady=6)
+
+    workspace = tk.Frame(root)
+    workspace.pack(side="top", fill="both", expand=True)
+
+    left_main = tk.Frame(workspace)
+    left_main.pack(side="left", fill="both", expand=True)
+
+    sidebar = tk.Frame(workspace, width=360, bd=1, relief="groove")
+    sidebar.pack_propagate(False)
 
     # ===== 外层可滚动区域（大滚动条） =====
-    canvas = tk.Canvas(body, highlightthickness=0)
-    vbar = tk.Scrollbar(body, orient="vertical", command=canvas.yview)
+    canvas = tk.Canvas(left_main, highlightthickness=0)
+    vbar = tk.Scrollbar(left_main, orient="vertical", command=canvas.yview)
     canvas.configure(yscrollcommand=vbar.set)
 
     vbar.pack(side="right", fill="y")
@@ -1701,11 +1761,54 @@ def create_gui():
             "hole_models": hole_models_var.get().strip(),
         }
 
-    # 默认展示研究模式
+    refresh_outputs = build_outputs_view(sidebar, ctx_getter)
+
+    refresh_job = None
+
+    def schedule_refresh(*_args):
+        nonlocal refresh_job
+        if not show_sidebar_var.get():
+            return
+        if refresh_job is not None:
+            root.after_cancel(refresh_job)
+        refresh_job = root.after(150, refresh_outputs)
+
+    for var in [
+        mode_var,
+        policy_var,
+        full_var,
+        contacts_var,
+        hbonds_var,
+        sasa_var,
+        sites_contacts_var,
+        sites_coulombic_var,
+        out_dir_var,
+        hole_base_dir_var,
+        hole_models_var,
+        residue_expr_var,
+        roi_expr_var,
+        chain_var,
+    ]:
+        try:
+            var.trace_add("write", schedule_refresh)
+        except Exception:
+            pass
+
+    if show_sidebar_var.get():
+        sidebar.pack(side="right", fill="y")
+        refresh_outputs()
+
+        # 默认展示研究模式
     update_mode()
 
     root.bind("<F1>", lambda _e: open_help_window(root, ctx_getter))
 
+    def on_close():
+        settings["show_outputs_sidebar"] = bool(show_sidebar_var.get())
+        save_settings(settings)
+        root.destroy()
+
+    root.protocol("WM_DELETE_WINDOW", on_close)
     return root
 
 
