@@ -916,6 +916,257 @@ def plddt_summary_for_models(pdb_dir: str, models: list[str]) -> "_pd.DataFrame"
 
     return _pd.DataFrame(rows)
 
+def _parse_resi_expr(expr: str) -> List[int]:
+    """Parse residue expression like '283,286,291' or '298-300'."""
+
+    expr = (expr or "").strip()
+    if not expr:
+        return []
+    expr = expr.replace("，", ",")
+    residues: List[int] = []
+    for part in re.split(r"[,\s;]+", expr):
+        if not part:
+            continue
+        if "-" in part:
+            start, end = part.split("-", 1)
+            residues.extend(range(int(start), int(end) + 1))
+        else:
+            residues.append(int(part))
+    return sorted(set(residues))
+
+def _get_residue_atom_coords(
+        pdb_path: Path,
+        chain_id: str,
+        resi_list: List[int],
+) -> Dict[int, _np.ndarray]:
+    """Return {resi: coords(N,3)} for non-hydrogen atoms."""
+
+    resi_set = set(resi_list)
+    coords_map: Dict[int, List[_np.ndarray]] = {resi: [] for resi in resi_list}
+    if _PDBParser is not None:
+        parser = _PDBParser(QUIET=True)
+        structure = parser.get_structure(pdb_path.stem, str(pdb_path))
+        for model in structure:
+            for chain in model:
+                if chain.id != chain_id:
+                    continue
+                for res in chain:
+                    if res.id[0] != " ":
+                        continue
+                        resi = res.id[1]
+                    if resi not in resi_set:
+                        continue
+                    for atom in res.get_atoms():
+                        element = (atom.element or "").strip().upper()
+                        if element == "H":
+                            continue
+                        coords_map[resi].append(atom.coord.astype(float))
+        return {
+            resi: _np.array(coords_map[resi], dtype=float)
+            for resi in resi_list
+            if coords_map[resi]
+        }
+
+    with open(pdb_path, encoding="utf-8", errors="ignore") as handle:
+        for line in handle:
+            if not line.startswith(("ATOM", "HETATM")):
+                continue
+            if len(line) < 54:
+                continue
+            chain = line[21].strip()
+            if chain != chain_id:
+                continue
+            try:
+                resi = int(line[22:26].strip())
+            except ValueError:
+                continue
+            if resi not in resi_set:
+                continue
+            element = line[76:78].strip().upper()
+            if not element:
+                atom_name = line[12:16].strip().upper()
+                element = atom_name[:1]
+            if element == "H":
+                continue
+            try:
+                x = float(line[30:38])
+                y = float(line[38:46])
+                z = float(line[46:54])
+            except ValueError:
+                continue
+            coords_map[resi].append(_np.array([x, y, z], dtype=float))
+        return {
+            resi: _np.array(coords_map[resi], dtype=float)
+            for resi in resi_list
+            if coords_map[resi]
+        }
+
+def _min_pairwise_dist(coords_a: _np.ndarray, coords_b: _np.ndarray) -> float:
+    if coords_a.size == 0 or coords_b.size == 0:
+        return float("inf")
+    diff = coords_a[:, None, :] - coords_b[None, :, :]
+    dist2 = _np.sum(diff * diff, axis=-1)
+    return float(_np.sqrt(dist2.min()))
+
+def _calc_cross_contacts(
+        pdb_path: Path,
+        chain_id: str,
+        group_a: List[int],
+        group_b: List[int],
+        cutoff: float,
+) -> Tuple[int, float, float]:
+    coords_map = _get_residue_atom_coords(pdb_path, chain_id, group_a + group_b)
+    pairs = 0
+    min_dist = float("inf")
+    for res_a in group_a:
+        for res_b in group_b:
+            if res_a not in coords_map or res_b not in coords_map:
+                continue
+            dmin = _min_pairwise_dist(coords_map[res_a], coords_map[res_b])
+            min_dist = min(min_dist, dmin)
+            if dmin <= cutoff:
+                pairs += 1
+    if min_dist == float("inf"):
+        min_dist = float("nan")
+    total_pairs = len(group_a) * len(group_b)
+    density = pairs / total_pairs if total_pairs else float("nan")
+    return pairs, density, min_dist
+
+def _contacts_label(pairs: int, min_dist: float) -> str:
+    if pairs >= 5:
+        label = "接触稠密"
+    elif pairs >= 2:
+        label = "接触减少"
+    else:
+        label = "接触断裂"
+    if not _pd.isna(min_dist) and min_dist <= 2.8:
+        label = f"{label}（强近邻）"
+    return label
+
+def _find_model_pdb(out_dir: str, pdb_dir: Optional[str], model: str) -> Optional[str]:
+    candidates = []
+    if pdb_dir:
+        candidates.append(os.path.join(pdb_dir, f"{model}.pdb"))
+        candidates.append(os.path.join(out_dir, "MUT", f"{model}.pdb"))
+        candidates.append(os.path.join(out_dir, f"{model}.pdb"))
+    for candidate in candidates:
+        if os.path.isfile(candidate):
+            return candidate
+    pattern = os.path.join(out_dir, "**", f"{model}.pdb")
+    hits = glob.glob(pattern, recursive=True)
+    return hits[0] if hits else None
+
+def append_cross_contact_metrics(
+        out_dir: str,
+        pdb_dir: str | None = None,
+        chain_id: str = "A",
+        group_a_expr: str = "283,286,291",
+        group_b_expr: str = "298-300",
+        cutoff: float = 4.0,
+) -> str:
+    """
+    追加 P-loop ↔ S6 跨域接触指标到 metrics_all / metrics_scored / stage3_table。
+    返回更新后的 metrics_all.csv 路径。
+    """
+
+    if _pd is None:
+        raise RuntimeError("需要 pandas 才能追加接触指标。")
+
+    out_dir = (out_dir or "").strip()
+    if not out_dir:
+        raise ValueError("out_dir 不能为空")
+
+    metrics_all = find_table(out_dir, "metrics_all.csv")
+    if not os.path.isfile(metrics_all):
+        raise FileNotFoundError(f"找不到 metrics_all.csv：{metrics_all}")
+
+    group_a = _parse_resi_expr(group_a_expr)
+    group_b = _parse_resi_expr(group_b_expr)
+    if not group_a or not group_b:
+        raise ValueError("group_a_expr/group_b_expr 不能为空或解析失败。")
+
+    df = _pd.read_csv(metrics_all)
+    rows = []
+    for model in df["Model"].astype(str).tolist():
+        pdb_path = _find_model_pdb(out_dir, pdb_dir, model)
+        if not pdb_path:
+            print(f"[Warning] 未找到模型 PDB: {model}")
+            rows.append(
+                {
+                    "Model": model,
+                    "CrossContactPairs": _np.nan,
+                    "CrossContactDensity": _np.nan,
+                    "CrossContactMinDist": _np.nan,
+                }
+            )
+            continue
+        pairs, density, min_dist = _calc_cross_contacts(
+            Path(pdb_path),
+            (chain_id or "A").strip(),
+            group_a,
+            group_b,
+            cutoff,
+        )
+        rows.append(
+            {
+                "Model": model,
+                "CrossContactPairs": pairs,
+                "CrossContactDensity": round(density, 4),
+                "CrossContactMinDist": round(min_dist, 3)
+                if not _np.isnan(min_dist)
+                else _np.nan,
+            }
+        )
+
+    cross_df = _pd.DataFrame(rows)
+    df = df.drop(columns=[c for c in cross_df.columns if c != "Model" and c in df.columns])
+    df = df.merge(cross_df, on="Model", how="left")
+    df.to_csv(metrics_all, index=False, encoding="utf-8-sig")
+
+    scored_path = find_table(out_dir, "metrics_scored.csv")
+    if os.path.isfile(scored_path):
+        scored_df = _pd.read_csv(scored_path)
+        scored_df = scored_df.drop(
+            columns=[c for c in cross_df.columns if c != "Model" and c in scored_df.columns]
+        )
+        scored_df = scored_df.merge(cross_df, on="Model", how="left")
+        scored_df.to_csv(scored_path, index=False, encoding="utf-8-sig")
+
+    stage3_path = find_table(out_dir, "stage3_table.csv")
+    if os.path.isfile(stage3_path):
+        stage3_df = _pd.read_csv(stage3_path)
+        stage3_df = stage3_df.drop(
+            columns=[c for c in cross_df.columns if c != "Model" and c in stage3_df.columns]
+        )
+        stage3_df = stage3_df.merge(cross_df, on="Model", how="left")
+        if "Contacts_Qualitative" not in stage3_df.columns:
+            stage3_df["Contacts_Qualitative"] = ""
+        labels = stage3_df["Model"].map(
+            cross_df.set_index("Model")["CrossContactPairs"]
+        )
+        min_dists = stage3_df["Model"].map(
+            cross_df.set_index("Model")["CrossContactMinDist"]
+        )
+
+        def _fill_label(row) -> str:
+            current = row.get("Contacts_Qualitative", "")
+            if isinstance(current, str) and current.strip():
+                return current
+            pairs = row.get("_pairs")
+            min_dist = row.get("_min")
+            if _pd.isna(pairs):
+                return ""
+            return _contacts_label(int(pairs), float(min_dist))
+
+        stage3_df["_pairs"] = labels
+        stage3_df["_min"] = min_dists
+        stage3_df["Contacts_Qualitative"] = stage3_df.apply(_fill_label, axis=1)
+        stage3_df = stage3_df.drop(columns=["_pairs", "_min"])
+        stage3_df.to_csv(stage3_path, index=False, encoding="utf-8-sig")
+
+    return metrics_all
+
+
 def short_model_label(model: str) -> str:
     """
     尽量把模型名缩短：
@@ -1269,6 +1520,8 @@ def build_cxc_script(
     # Header
     add("# === Auto-generated ChimeraX script ===")
     add("# 由 Python 工具生成，自动完成 open / 对齐 / 出图 等步骤。")
+    add("")
+    add("author: K")
     add("")
     add("# WT PDB: %s" % wt_pdb_cx)
     if mutant_list:
