@@ -1014,23 +1014,39 @@ def _calc_cross_contacts(
         group_a: List[int],
         group_b: List[int],
         cutoff: float,
-) -> Tuple[int, float, float]:
+        cutoff_scan: List[float],
+) -> Tuple[int, float, float, str, str, Dict[float, int]]:
     coords_map = _get_residue_atom_coords(pdb_path, chain_id, group_a + group_b)
-    pairs = 0
-    min_dist = float("inf")
+    pair_distances = []
     for res_a in group_a:
         for res_b in group_b:
             if res_a not in coords_map or res_b not in coords_map:
                 continue
             dmin = _min_pairwise_dist(coords_map[res_a], coords_map[res_b])
-            min_dist = min(min_dist, dmin)
-            if dmin <= cutoff:
-                pairs += 1
-    if min_dist == float("inf"):
-        min_dist = float("nan")
+            pair_distances.append((res_a, res_b, dmin))
+
+    min_dist = float("inf")
+    min_pair = ""
+    if pair_distances:
+        min_res_a, min_res_b, min_dist = min(pair_distances, key=lambda x: x[2])
+        min_pair = f"{min_res_a}-{min_res_b}"
+
+    pairs = sum(dmin <= cutoff for _, _, dmin in pair_distances)
     total_pairs = len(group_a) * len(group_b)
     density = pairs / total_pairs if total_pairs else float("nan")
-    return pairs, density, min_dist
+
+    if min_dist == float("inf"):
+        min_dist = float("nan")
+        min_pair = ""
+
+    dist_matrix = ";".join(
+        f"{res_a}-{res_b}:{dmin:.3f}" for res_a, res_b, dmin in pair_distances
+    )
+    cutoff_counts = {
+        cutoff_value: sum(dmin <= cutoff_value for _, _, dmin in pair_distances)
+        for cutoff_value in cutoff_scan
+    }
+    return pairs, density, min_dist, min_pair, dist_matrix, cutoff_counts
 
 def _contacts_label(pairs: int, min_dist: float) -> str:
     if pairs >= 5:
@@ -1096,37 +1112,44 @@ def append_cross_contact_metrics(
             raise FileNotFoundError("找不到 metrics_all.csv，且未提供 pdb_dir 扫描模型。")
         models = sorted({Path(p).stem for p in glob.glob(os.path.join(pdb_dir, "*.pdb"))})
 
+    cutoff_scan = [4.0, 5.0, 6.0, 6.5, 7.0]
+    cutoff_scan_labels = {value: f"Pairs@{value:.1f}" for value in cutoff_scan}
     rows = []
     for model in models:
         pdb_path = _find_model_pdb(out_dir, pdb_dir, model)
         if not pdb_path:
             print(f"[Warning] 未找到模型 PDB: {model}")
-            rows.append(
-                {
-                    "Model": model,
-                    "CrossContactPairs": _np.nan,
-                    "CrossContactDensity": _np.nan,
-                    "CrossContactMinDist": _np.nan,
-                }
-            )
+            empty_row = {
+                "Model": model,
+                "CrossContactPairs": _np.nan,
+                "CrossContactDensity": _np.nan,
+                "CrossContactMinDist": _np.nan,
+                "CrossMinPair": _np.nan,
+                "CrossDistMatrix": _np.nan,
+            }
+            for cutoff_value in cutoff_scan:
+                empty_row[cutoff_scan_labels[cutoff_value]] = _np.nan
+            rows.append(empty_row)
             continue
-        pairs, density, min_dist = _calc_cross_contacts(
+        pairs, density, min_dist, min_pair, dist_matrix, cutoff_counts = _calc_cross_contacts(
             Path(pdb_path),
             (chain_id or "A").strip(),
             group_a,
             group_b,
             cutoff,
+            cutoff_scan,
         )
-        rows.append(
-            {
-                "Model": model,
-                "CrossContactPairs": pairs,
-                "CrossContactDensity": round(density, 4),
-                "CrossContactMinDist": round(min_dist, 3)
-                if not _np.isnan(min_dist)
-                else _np.nan,
-            }
-        )
+        row = {
+            "Model": model,
+            "CrossContactPairs": pairs,
+            "CrossContactDensity": round(density, 4),
+            "CrossContactMinDist": round(min_dist, 3) if not _np.isnan(min_dist) else _np.nan,
+            "CrossMinPair": min_pair,
+            "CrossDistMatrix": dist_matrix,
+        }
+        for cutoff_value in cutoff_scan:
+            row[cutoff_scan_labels[cutoff_value]] = cutoff_counts.get(cutoff_value, 0)
+        rows.append(row)
 
     cross_df = _pd.DataFrame(rows)
     if summary_csv:
