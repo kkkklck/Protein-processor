@@ -1214,6 +1214,71 @@ def _derive_delta_vs_baseline(
         "TopDeltaPairs": top_pairs_str,
     }
 
+
+def _choose_best_cutoff(
+        cross_df: "_pd.DataFrame",
+        cutoff_scan: List[float],
+        total_pairs: int,
+        baseline_model: str | None = "WT",
+) -> float:
+    """
+    自动选择最“有区分度”的 cutoff（从 cutoff_scan 里挑）。
+    规则：
+      - 如果 baseline_model 存在：最大化 mean(|Pairs@c - Pairs@c(baseline)|)
+      - 否则：最大化 var(Pairs@c)
+    并轻微惩罚“全 0 / 全饱和”的 cutoff（避免选到没信息的极端刻度）。
+    """
+    if _pd is None or cross_df is None or cross_df.empty:
+        return 6.5
+
+    baseline_row = None
+    if baseline_model:
+        key = str(baseline_model).strip()
+        try:
+            hit = cross_df.loc[cross_df["Model"].astype(str) == key]
+            if len(hit) > 0:
+                baseline_row = hit.iloc[0]
+        except Exception:
+            baseline_row = None
+
+    best_c = None
+    best_score = -1.0
+
+    for c in sorted(set(float(x) for x in cutoff_scan)):
+        col = f"Pairs@{c:.1f}"
+        if col not in cross_df.columns:
+            continue
+
+        vec = _pd.to_numeric(cross_df[col], errors="coerce").to_numpy(dtype=float)
+        vec = vec[~_np.isnan(vec)]
+        if vec.size < 2:
+            continue
+
+        if baseline_row is not None:
+            base_val = baseline_row.get(col, _np.nan)
+            try:
+                base_val = float(base_val)
+            except Exception:
+                base_val = _np.nan
+            if not _np.isnan(base_val):
+                sep = float(_np.mean(_np.abs(vec - base_val)))
+            else:
+                sep = float(_np.var(vec))
+        else:
+            sep = float(_np.var(vec))
+
+        if total_pairs > 0:
+            frac = float(_np.mean(vec) / float(total_pairs))
+            penalty = 1.0 - 2.0 * abs(frac - 0.5)
+            sep *= (0.25 + 0.75 * max(0.0, penalty))
+
+        if sep > best_score:
+            best_score = sep
+            best_c = c
+
+    return float(best_c) if best_c is not None else 6.5
+
+
 def _contacts_label(pairs: int, min_dist: float) -> str:
     if pairs >= 5:
         label = "接触稠密"
@@ -1244,7 +1309,7 @@ def append_cross_contact_metrics(
         chain_id: str = "A",
         group_a_expr: str = "283,286,291",
         group_b_expr: str = "298-300",
-        cutoff: float = 4.0,
+        cutoff: float | None = None,
         cutoff_scan: List[float] | None = None,
         top_k: int = 3,
         soft_center: float = 7.5,
@@ -1313,12 +1378,13 @@ def append_cross_contact_metrics(
                 empty_row[cutoff_scan_labels[cutoff_value]] = _np.nan
             rows.append(empty_row)
             continue
+        cutoff_for_calc = float(cutoff) if cutoff is not None else float(cutoff_scan[0])
         pairs, density, min_dist, min_pair, dist_matrix, cutoff_counts, pair_dist_map, weight_map = _calc_cross_contacts(
             Path(pdb_path),
             (chain_id or "A").strip(),
             group_a,
             group_b,
-            cutoff,
+            cutoff_for_calc,
             cutoff_scan,
             plddt_weight=plddt_weight,
             plddt_threshold=plddt_threshold,
@@ -1366,6 +1432,34 @@ def append_cross_contact_metrics(
     else:
         for col in delta_columns:
             cross_df[col] = _np.nan if col in {"SumAbsDeltaVsWT", "RMSDeltaVsWT"} else ""
+
+    total_pairs = len(group_a) * len(group_b)
+    if cutoff is None:
+        used_cutoff = _choose_best_cutoff(
+            cross_df=cross_df,
+            cutoff_scan=cutoff_scan,
+            total_pairs=total_pairs,
+            baseline_model=baseline_model,
+        )
+    else:
+        used_cutoff = float(cutoff)
+
+    cross_df["CrossCutoffUsed"] = round(float(used_cutoff), 3)
+
+    new_pairs = []
+    new_density = []
+    for model in cross_df["Model"].astype(str).tolist():
+        pair_map = model_pair_maps.get(model)
+        if not pair_map:
+            new_pairs.append(_np.nan)
+            new_density.append(_np.nan)
+            continue
+        p = sum(float(d) <= float(used_cutoff) for d in pair_map.values())
+        new_pairs.append(int(p))
+        new_density.append(round(p / total_pairs, 4) if total_pairs else _np.nan)
+
+    cross_df["CrossContactPairs"] = new_pairs
+    cross_df["CrossContactDensity"] = new_density
     if summary_csv:
         summary_dir = os.path.dirname(summary_csv)
         if summary_dir:
