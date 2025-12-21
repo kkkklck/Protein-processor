@@ -1278,6 +1278,38 @@ def _choose_best_cutoff(
 
     return float(best_c) if best_c is not None else 6.5
 
+def _select_cross_pair_pool(
+        model_pair_maps: Dict[str, Dict[str, float]],
+        baseline_model: str | None,
+        pool_size: int,
+        distance_scale: float = 6.5,
+) -> List[str]:
+    if not model_pair_maps or pool_size <= 0:
+        return []
+
+    if baseline_model:
+        baseline_key = baseline_model.strip()
+        baseline_map = model_pair_maps.get(baseline_key)
+        if baseline_map:
+            sorted_pairs = sorted(baseline_map.items(), key=lambda item: item[1])
+            return [pair for pair, _ in sorted_pairs[:pool_size]]
+
+    pair_distances: Dict[str, List[float]] = defaultdict(list)
+    for pair_map in model_pair_maps.values():
+        for pair, dist in pair_map.items():
+            pair_distances[pair].append(dist)
+
+    scored_pairs: List[Tuple[str, float]] = []
+    for pair, distances in pair_distances.items():
+        if len(distances) < 2:
+            continue
+        mean_dist = float(statistics.mean(distances))
+        var_dist = float(statistics.pvariance(distances))
+        importance = var_dist * math.exp(-mean_dist / distance_scale)
+        scored_pairs.append((pair, importance))
+
+    scored_pairs.sort(key=lambda item: item[1], reverse=True)
+    return [pair for pair, _ in scored_pairs[:pool_size]]
 
 def _contacts_label(pairs: int, min_dist: float) -> str:
     if pairs >= 5:
@@ -1355,12 +1387,58 @@ def append_cross_contact_metrics(
     cutoff_scan_labels = {value: f"Pairs@{value:.1f}" for value in cutoff_scan}
     rows = []
     model_pair_maps: Dict[str, Dict[str, float]] = {}
+    model_weight_maps: Dict[str, Dict[str, float]] = {}
+    missing_models: set[str] = set()
     for model in models:
         pdb_path = _find_model_pdb(out_dir, pdb_dir, model)
         if not pdb_path:
             print(f"[Warning] 未找到模型 PDB: {model}")
+            missing_models.add(model)
+            continue
+        cutoff_for_calc = float(cutoff) if cutoff is not None else float(cutoff_scan[0])
+        pairs, density, min_dist, min_pair, dist_matrix, cutoff_counts, pair_dist_map, weight_map = _calc_cross_contacts(
+            Path(pdb_path),
+            (chain_id or "A").strip(),
+            group_a,
+            group_b,
+            cutoff_for_calc,
+            cutoff_scan,
+            plddt_weight=plddt_weight,
+            plddt_threshold=plddt_threshold,
+        )
+        model_pair_maps[model] = pair_dist_map
+        model_weight_maps[model] = weight_map
+
+    pool_size = max(1, int(top_k))
+    pair_pool = _select_cross_pair_pool(
+        model_pair_maps=model_pair_maps,
+        baseline_model=baseline_model,
+        pool_size=pool_size,
+    )
+    pool_label = ";".join(pair_pool)
+
+    def _filter_pair_map(pair_map: Dict[str, float]) -> Dict[str, float]:
+        if not pair_pool:
+            return pair_map
+        return {pair: pair_map[pair] for pair in pair_pool if pair in pair_map}
+
+    filtered_pair_maps: Dict[str, Dict[str, float]] = {}
+    filtered_weight_maps: Dict[str, Dict[str, float]] = {}
+    for model, pair_map in model_pair_maps.items():
+        filtered_pair_maps[model] = _filter_pair_map(pair_map)
+        filtered_weight_maps[model] = {
+            pair: weight
+            for pair, weight in model_weight_maps.get(model, {}).items()
+            if not pair_pool or pair in filtered_pair_maps[model]
+        }
+
+    total_pairs = len(pair_pool) if pair_pool else len(group_a) * len(group_b)
+
+    for model in models:
+        if model in missing_models:
             empty_row = {
                 "Model": model,
+                "CrossPairPool": pool_label,
                 "CrossContactPairs": _np.nan,
                 "CrossContactDensity": _np.nan,
                 "CrossContactMinDist": _np.nan,
@@ -1378,21 +1456,26 @@ def append_cross_contact_metrics(
                 empty_row[cutoff_scan_labels[cutoff_value]] = _np.nan
             rows.append(empty_row)
             continue
+
+        pair_map = filtered_pair_maps.get(model, {})
+        weight_map = filtered_weight_maps.get(model, {})
         cutoff_for_calc = float(cutoff) if cutoff is not None else float(cutoff_scan[0])
-        pairs, density, min_dist, min_pair, dist_matrix, cutoff_counts, pair_dist_map, weight_map = _calc_cross_contacts(
-            Path(pdb_path),
-            (chain_id or "A").strip(),
-            group_a,
-            group_b,
-            cutoff_for_calc,
-            cutoff_scan,
-            plddt_weight=plddt_weight,
-            plddt_threshold=plddt_threshold,
-        )
-        model_pair_maps[model] = pair_dist_map
-        total_pairs = len(group_a) * len(group_b)
+        pairs = sum(dist <= cutoff_for_calc for dist in pair_map.values())
+        density = pairs / total_pairs if total_pairs else float("nan")
+
+        if pair_map:
+            min_pair, min_dist = min(pair_map.items(), key=lambda item: item[1])
+        else:
+            min_pair = ""
+            min_dist = float("nan")
+
+        dist_matrix = ";".join(f"{pair}:{dist:.3f}" for pair, dist in pair_map.items())
+        cutoff_counts = {
+            cutoff_value: sum(dist <= cutoff_value for dist in pair_map.values())
+            for cutoff_value in cutoff_scan
+        }
         derived_metrics = _derive_cross_metrics(
-            pair_dist_map,
+            pair_map,
             weight_map,
             cutoff_scan,
             total_pairs,
@@ -1402,6 +1485,7 @@ def append_cross_contact_metrics(
         )
         row = {
             "Model": model,
+            "CrossPairPool": pool_label,
             "CrossContactPairs": pairs,
             "CrossContactDensity": round(density, 4),
             "CrossContactMinDist": round(min_dist, 3) if not _np.isnan(min_dist) else _np.nan,
@@ -1417,11 +1501,11 @@ def append_cross_contact_metrics(
     delta_columns = ["SumAbsDeltaVsWT", "RMSDeltaVsWT", "MaxAbsDeltaPair", "TopDeltaPairs"]
     if baseline_model:
         baseline_key = baseline_model.strip()
-        if baseline_key in model_pair_maps:
-            baseline_map = model_pair_maps[baseline_key]
+        if baseline_key in filtered_pair_maps:
+            baseline_map = filtered_pair_maps[baseline_key]
             delta_rows = []
             for model in cross_df["Model"].astype(str).tolist():
-                pair_map = model_pair_maps.get(model, {})
+                pair_map = filtered_pair_maps.get(model, {})
                 delta_rows.append(_derive_delta_vs_baseline(pair_map, baseline_map))
             delta_df = _pd.DataFrame(delta_rows)
             for col in delta_columns:
@@ -1433,7 +1517,6 @@ def append_cross_contact_metrics(
         for col in delta_columns:
             cross_df[col] = _np.nan if col in {"SumAbsDeltaVsWT", "RMSDeltaVsWT"} else ""
 
-    total_pairs = len(group_a) * len(group_b)
     if cutoff is None:
         used_cutoff = _choose_best_cutoff(
             cross_df=cross_df,
@@ -1449,7 +1532,7 @@ def append_cross_contact_metrics(
     new_pairs = []
     new_density = []
     for model in cross_df["Model"].astype(str).tolist():
-        pair_map = model_pair_maps.get(model)
+        pair_map = filtered_pair_maps.get(model)
         if not pair_map:
             new_pairs.append(_np.nan)
             new_density.append(_np.nan)
