@@ -1663,7 +1663,7 @@ def create_gui():
     cross_chain_var = tk.StringVar(value="A")
     cross_group_a_var = tk.StringVar(value="283,286,291")
     cross_group_b_var = tk.StringVar(value="298-300")
-    cross_cutoff_var = tk.StringVar(value="4.0")
+    cross_cutoff_var = tk.StringVar(value="")
     cross_write_var = tk.IntVar(value=1)
 
     tk.Label(cross_frame, text="PDB 文件夹：").grid(row=0, column=0, sticky="w")
@@ -1717,6 +1717,7 @@ def create_gui():
         group_a_expr = cross_group_a_var.get().strip()
         group_b_expr = cross_group_b_var.get().strip()
         cutoff_raw = cross_cutoff_var.get().strip()
+        cutoff = None
 
         if not out_dir:
             messagebox.showerror("缺少输出目录", "请先设置“图片 / 文本输出目录”。")
@@ -1724,11 +1725,12 @@ def create_gui():
         if not pdb_dir:
             messagebox.showerror("缺少 PDB 文件夹", "请设置 PDB 文件夹。")
             return
-        try:
-            cutoff = float(cutoff_raw)
-        except Exception:
-            messagebox.showerror("cutoff 格式错误", "cutoff 需要是数字（Å）。")
-            return
+        if cutoff_raw:
+            try:
+                cutoff = float(cutoff_raw)
+            except Exception:
+                messagebox.showerror("cutoff 格式错误", "cutoff 需要是数字（Å），或留空让程序自动选择。")
+                return
 
         summary_csv = os.path.join(out_dir, "tables", "contacts_cross_summary.csv")
 
