@@ -1008,6 +1008,40 @@ def _min_pairwise_dist(coords_a: _np.ndarray, coords_b: _np.ndarray) -> float:
     dist2 = _np.sum(diff * diff, axis=-1)
     return float(_np.sqrt(dist2.min()))
 
+def _get_residue_plddt(
+        pdb_path: Path,
+        chain_id: str,
+        resi_list: List[int],
+) -> Dict[int, float]:
+    resi_set = set(resi_list)
+    plddt_map: Dict[int, List[float]] = defaultdict(list)
+    with open(pdb_path, encoding="utf-8", errors="ignore") as handle:
+        for line in handle:
+            if not line.startswith(("ATOM", "HETATM")):
+                continue
+            if len(line) < 66:
+                continue
+            chain = line[21].strip()
+            if chain != chain_id:
+                continue
+            try:
+                resi = int(line[22:26].strip())
+            except ValueError:
+                continue
+            if resi not in resi_set:
+                continue
+            try:
+                bfactor = float(line[60:66])
+            except ValueError:
+                continue
+            plddt_map[resi].append(bfactor)
+    return {
+        resi: float(statistics.mean(vals))
+        for resi, vals in plddt_map.items()
+        if vals
+    }
+
+
 def _calc_cross_contacts(
         pdb_path: Path,
         chain_id: str,
@@ -1015,15 +1049,46 @@ def _calc_cross_contacts(
         group_b: List[int],
         cutoff: float,
         cutoff_scan: List[float],
-) -> Tuple[int, float, float, str, str, Dict[float, int]]:
+        plddt_weight: bool = False,
+        plddt_threshold: float | None = None,
+) -> Tuple[
+    int,
+    float,
+    float,
+    str,
+    str,
+    Dict[float, int],
+    Dict[str, float],
+    Dict[str, float],
+]:
     coords_map = _get_residue_atom_coords(pdb_path, chain_id, group_a + group_b)
+    plddt_map: Dict[int, float] = {}
+    if plddt_weight or plddt_threshold is not None:
+        plddt_map = _get_residue_plddt(pdb_path, chain_id, group_a + group_b)
+
     pair_distances = []
+    pair_dist_map: Dict[str, float] = {}
+    weight_map: Dict[str, float] = {}
     for res_a in group_a:
         for res_b in group_b:
             if res_a not in coords_map or res_b not in coords_map:
                 continue
             dmin = _min_pairwise_dist(coords_map[res_a], coords_map[res_b])
             pair_distances.append((res_a, res_b, dmin))
+            pair_key = f"{res_a}-{res_b}"
+            pair_dist_map[pair_key] = dmin
+            if plddt_weight or plddt_threshold is not None:
+                a_plddt = plddt_map.get(res_a)
+                b_plddt = plddt_map.get(res_b)
+                if a_plddt is None or b_plddt is None:
+                    weight = 1.0
+                else:
+                    weight = max(min(min(a_plddt, b_plddt) / 100.0, 1.0), 0.0)
+                if plddt_threshold is not None and min(a_plddt or 0.0, b_plddt or 0.0) < plddt_threshold:
+                    weight = 0.0
+                weight_map[pair_key] = weight
+            else:
+                weight_map[pair_key] = 1.0
 
     min_dist = float("inf")
     min_pair = ""
@@ -1046,7 +1111,108 @@ def _calc_cross_contacts(
         cutoff_value: sum(dmin <= cutoff_value for _, _, dmin in pair_distances)
         for cutoff_value in cutoff_scan
     }
-    return pairs, density, min_dist, min_pair, dist_matrix, cutoff_counts
+    return (
+        pairs,
+        density,
+        min_dist,
+        min_pair,
+        dist_matrix,
+        cutoff_counts,
+        pair_dist_map,
+        weight_map,
+    )
+
+
+def _sigmoid(x: float) -> float:
+    if x >= 0:
+        z = math.exp(-x)
+        return 1 / (1 + z)
+    z = math.exp(x)
+    return z / (1 + z)
+
+
+def _derive_cross_metrics(
+        pair_dist_map: Dict[str, float],
+        weight_map: Dict[str, float],
+        cutoff_scan: List[float],
+        total_pairs: int,
+        top_k: int,
+        soft_center: float,
+        soft_slope: float,
+) -> Dict[str, float | str]:
+    if not pair_dist_map or total_pairs == 0:
+        return {
+            "CrossTop2Dist": _np.nan,
+            "CrossTop3Dist": _np.nan,
+            "CrossTopKMeanDist": _np.nan,
+            "CrossTopKPairs": "",
+            "CrossSoftScore": _np.nan,
+            "CrossInvScore": _np.nan,
+            "CrossCutoffAUC": _np.nan,
+        }
+
+    sorted_pairs = sorted(pair_dist_map.items(), key=lambda item: item[1])
+    top_items = sorted_pairs[:top_k]
+    top_k_mean = statistics.mean(d for _, d in top_items) if top_items else float("nan")
+    top2_dist = top_items[1][1] if len(top_items) >= 2 else float("nan")
+    top3_dist = top_items[2][1] if len(top_items) >= 3 else float("nan")
+    top_pairs_str = ";".join(f"{pair}:{dist:.3f}" for pair, dist in top_items)
+
+    soft_sum = 0.0
+    for pair, dist in pair_dist_map.items():
+        weight = weight_map.get(pair, 1.0)
+        soft_sum += weight * _sigmoid((soft_center - dist) / soft_slope)
+    soft_score = soft_sum / total_pairs if total_pairs else float("nan")
+
+    inv_score = statistics.mean(1 / (dist + 1e-6) for dist in pair_dist_map.values())
+
+    auc = float("nan")
+    if cutoff_scan and total_pairs:
+        sorted_cutoffs = sorted(cutoff_scan)
+        densities = [sum(d <= c for d in pair_dist_map.values()) / total_pairs for c in sorted_cutoffs]
+        auc = 0.0
+        for i in range(1, len(sorted_cutoffs)):
+            x0, x1 = sorted_cutoffs[i - 1], sorted_cutoffs[i]
+            y0, y1 = densities[i - 1], densities[i]
+            auc += (x1 - x0) * (y0 + y1) / 2
+
+    return {
+        "CrossTop2Dist": round(top2_dist, 3) if not _np.isnan(top2_dist) else _np.nan,
+        "CrossTop3Dist": round(top3_dist, 3) if not _np.isnan(top3_dist) else _np.nan,
+        "CrossTopKMeanDist": round(top_k_mean, 3) if not _np.isnan(top_k_mean) else _np.nan,
+        "CrossTopKPairs": top_pairs_str,
+        "CrossSoftScore": round(soft_score, 4) if not _np.isnan(soft_score) else _np.nan,
+        "CrossInvScore": round(inv_score, 6) if not _np.isnan(inv_score) else _np.nan,
+        "CrossCutoffAUC": round(auc, 4) if not _np.isnan(auc) else _np.nan,
+    }
+
+
+def _derive_delta_vs_baseline(
+        pair_dist_map: Dict[str, float],
+        baseline_dist_map: Dict[str, float],
+        top_n: int = 3,
+) -> Dict[str, float | str]:
+    common_pairs = [pair for pair in pair_dist_map if pair in baseline_dist_map]
+    if not common_pairs:
+        return {
+            "SumAbsDeltaVsWT": _np.nan,
+            "RMSDeltaVsWT": _np.nan,
+            "MaxAbsDeltaPair": "",
+            "TopDeltaPairs": "",
+        }
+    deltas = {pair: pair_dist_map[pair] - baseline_dist_map[pair] for pair in common_pairs}
+    abs_vals = [abs(val) for val in deltas.values()]
+    sum_abs = sum(abs_vals)
+    rms = math.sqrt(sum(val * val for val in deltas.values()) / len(deltas))
+    max_pair = max(deltas.items(), key=lambda item: abs(item[1]))[0]
+    top_pairs = sorted(deltas.items(), key=lambda item: abs(item[1]), reverse=True)[:top_n]
+    top_pairs_str = ";".join(f"{pair}:{delta:+.3f}" for pair, delta in top_pairs)
+    return {
+        "SumAbsDeltaVsWT": round(sum_abs, 3),
+        "RMSDeltaVsWT": round(rms, 3),
+        "MaxAbsDeltaPair": max_pair,
+        "TopDeltaPairs": top_pairs_str,
+    }
 
 def _contacts_label(pairs: int, min_dist: float) -> str:
     if pairs >= 5:
@@ -1079,11 +1245,19 @@ def append_cross_contact_metrics(
         group_a_expr: str = "283,286,291",
         group_b_expr: str = "298-300",
         cutoff: float = 4.0,
+        cutoff_scan: List[float] | None = None,
+        top_k: int = 3,
+        soft_center: float = 7.5,
+        soft_slope: float = 0.75,
+        baseline_model: str | None = "WT",
+        plddt_weight: bool = False,
+        plddt_threshold: float | None = None,
         write_tables: bool = True,
         summary_csv: str | None = None,
 ) -> str:
     """
     追加 P-loop ↔ S6 跨域接触指标到 metrics_all / metrics_scored / stage3_table。
+    支持 cutoff 扫描、Top-K 距离签名、连续化 soft 分数、以及相对基准模型的漂移量。
     返回更新后的 metrics_all.csv 路径。
     """
 
@@ -1112,9 +1286,10 @@ def append_cross_contact_metrics(
             raise FileNotFoundError("找不到 metrics_all.csv，且未提供 pdb_dir 扫描模型。")
         models = sorted({Path(p).stem for p in glob.glob(os.path.join(pdb_dir, "*.pdb"))})
 
-    cutoff_scan = [4.0, 5.0, 6.0, 6.5, 7.0]
+    cutoff_scan = cutoff_scan or [round(x, 1) for x in _np.arange(4.0, 10.1, 0.5)]
     cutoff_scan_labels = {value: f"Pairs@{value:.1f}" for value in cutoff_scan}
     rows = []
+    model_pair_maps: Dict[str, Dict[str, float]] = {}
     for model in models:
         pdb_path = _find_model_pdb(out_dir, pdb_dir, model)
         if not pdb_path:
@@ -1126,18 +1301,38 @@ def append_cross_contact_metrics(
                 "CrossContactMinDist": _np.nan,
                 "CrossMinPair": _np.nan,
                 "CrossDistMatrix": _np.nan,
+                "CrossTop2Dist": _np.nan,
+                "CrossTop3Dist": _np.nan,
+                "CrossTopKMeanDist": _np.nan,
+                "CrossTopKPairs": "",
+                "CrossSoftScore": _np.nan,
+                "CrossInvScore": _np.nan,
+                "CrossCutoffAUC": _np.nan,
             }
             for cutoff_value in cutoff_scan:
                 empty_row[cutoff_scan_labels[cutoff_value]] = _np.nan
             rows.append(empty_row)
             continue
-        pairs, density, min_dist, min_pair, dist_matrix, cutoff_counts = _calc_cross_contacts(
+        pairs, density, min_dist, min_pair, dist_matrix, cutoff_counts, pair_dist_map, weight_map = _calc_cross_contacts(
             Path(pdb_path),
             (chain_id or "A").strip(),
             group_a,
             group_b,
             cutoff,
             cutoff_scan,
+            plddt_weight=plddt_weight,
+            plddt_threshold=plddt_threshold,
+        )
+        model_pair_maps[model] = pair_dist_map
+        total_pairs = len(group_a) * len(group_b)
+        derived_metrics = _derive_cross_metrics(
+            pair_dist_map,
+            weight_map,
+            cutoff_scan,
+            total_pairs,
+            max(1, int(top_k)),
+            soft_center,
+            soft_slope,
         )
         row = {
             "Model": model,
@@ -1146,12 +1341,31 @@ def append_cross_contact_metrics(
             "CrossContactMinDist": round(min_dist, 3) if not _np.isnan(min_dist) else _np.nan,
             "CrossMinPair": min_pair,
             "CrossDistMatrix": dist_matrix,
+            **derived_metrics,
         }
         for cutoff_value in cutoff_scan:
             row[cutoff_scan_labels[cutoff_value]] = cutoff_counts.get(cutoff_value, 0)
         rows.append(row)
 
     cross_df = _pd.DataFrame(rows)
+    delta_columns = ["SumAbsDeltaVsWT", "RMSDeltaVsWT", "MaxAbsDeltaPair", "TopDeltaPairs"]
+    if baseline_model:
+        baseline_key = baseline_model.strip()
+        if baseline_key in model_pair_maps:
+            baseline_map = model_pair_maps[baseline_key]
+            delta_rows = []
+            for model in cross_df["Model"].astype(str).tolist():
+                pair_map = model_pair_maps.get(model, {})
+                delta_rows.append(_derive_delta_vs_baseline(pair_map, baseline_map))
+            delta_df = _pd.DataFrame(delta_rows)
+            for col in delta_columns:
+                cross_df[col] = delta_df.get(col, _np.nan)
+        else:
+            for col in delta_columns:
+                cross_df[col] = _np.nan if col in {"SumAbsDeltaVsWT", "RMSDeltaVsWT"} else ""
+    else:
+        for col in delta_columns:
+            cross_df[col] = _np.nan if col in {"SumAbsDeltaVsWT", "RMSDeltaVsWT"} else ""
     if summary_csv:
         summary_dir = os.path.dirname(summary_csv)
         if summary_dir:
@@ -1313,7 +1527,7 @@ def plot_basic_hole_metrics(hole_dir: str, out_dir: str | None = None):
     _plt.bar(x, df["r_min_A"].tolist())
     _plt.xticks(x, labels, rotation=45, ha="right")
     _plt.xlabel("Model")
-    _plt.ylabel("最小孔径 r_min (Å)")
+    _plt.ylabel("Minimum pore radius r_min (Å)")
     _plt.tight_layout()
     out1 = os.path.join(out_dir, "hole_r_min_bar.png")
     _plt.savefig(out1, dpi=300)
@@ -1325,7 +1539,7 @@ def plot_basic_hole_metrics(hole_dir: str, out_dir: str | None = None):
         _plt.bar(x, df["gate_length_A"].tolist())
         _plt.xticks(x, labels, rotation=45, ha="right")
         _plt.xlabel("Model")
-        _plt.ylabel("gate 长度 (Å)")
+        _plt.ylabel("Gate length (Å)")
         _plt.tight_layout()
         out2 = os.path.join(out_dir, "hole_gate_length_bar.png")
         _plt.savefig(out2, dpi=300)
