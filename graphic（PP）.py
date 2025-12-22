@@ -1982,20 +1982,23 @@ def create_gui():
     ).pack(side="left", padx=10)
 
     hole_btn_frame = tk.Frame(hole_container)
-    hole_btn_frame.pack(fill="x", padx=10, pady=10)
+    hole_btn_frame.pack(fill="x", padx=10, pady=(10, 4))
     tk.Button(hole_btn_frame, text="执行 HOLE 管道", command=on_generate, width=18).pack(side="left")
-    tk.Button(
-        hole_btn_frame,
-        text="环境检测",
-        command=lambda: on_env_check("hole"),
-        width=12,
-    ).pack(side="left", padx=8)
     tk.Button(
         hole_btn_frame,
         text="画 HOLE 对比图",
         command=on_plot_hole_metrics,
         width=18,
     ).pack(side="left", padx=8)
+
+    hole_tool_frame = tk.Frame(hole_container)
+    hole_tool_frame.pack(fill="x", padx=10, pady=(0, 10))
+    tk.Button(
+        hole_tool_frame,
+        text="环境检测",
+        command=lambda: on_env_check("hole"),
+        width=12,
+    ).pack(side="right")
 
     def ctx_getter():
         return {
