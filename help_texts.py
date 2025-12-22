@@ -46,6 +46,21 @@ HELP_CONTENT = [
         "title": "环境配置｜HOLE & MSA（必看）",
         "items": [
             {
+                "id": "env_report_readme",
+                "title": "如何读「环境检测报告」",
+                "tldr": "看到 FAIL 就点“打开 Help 对应段落”，照着步骤修；WARN 只影响出图/出表完整度。",
+                "steps": [
+                    "先看 FAIL：点“打开 Help 对应段落”，按 1-3 步修复。",
+                    "PASS 代表命令可用；WARN 代表可跑但可能缺图/缺表。",
+                    "修完后再点一次环境检测，确认全部 PASS/WARN。",
+                ],
+                "use_when": "你已经有检测报告，但不确定该先修哪一项。",
+                "inputs": ["环境检测报告"],
+                "actions": ["环境检测 → 打开 Help 对应段落"],
+                "outputs": ["能明确下一步修复路径"],
+                "insights": "FAIL 必修，WARN 可选；先保证 WSL/Clustal/HOLE 可跑。",
+            },
+            {
                 "id": "env_self_check",
                 "title": "一键自检：你电脑到底缺啥",
                 "tldr": "先别急着点“运行 HOLE / 一键 MSA”，先确认 WSL、Clustal-Omega、conda、HOLE 都“活着”。（因为程序本质是：Windows 调 wsl bash -lc ... 去跑命令）",
@@ -105,6 +120,20 @@ HELP_CONTENT = [
                 "actions": ["检查 clustalo 路径", "更新 PP.py 配置"],
                 "outputs": ["MSA 一键运行正常"],
                 "insights": "路径配好一次即可复用。",
+            },
+            {
+                "id": "env_python_deps",
+                "title": "Python 依赖缺失怎么办",
+                "tldr": "缺 pandas/matplotlib/biopython 不会影响按钮执行，但会影响表格/图表完整度。",
+                "steps": [
+                    "在当前 Python 环境安装依赖：pip install biopython pandas matplotlib",
+                    "重新打开 GUI，再跑一次环境检测。",
+                ],
+                "use_when": "环境检测报告提示 Python依赖 WARN。",
+                "inputs": ["可用的 Python 环境（与 GUI 同一个）"],
+                "actions": ["安装依赖 → 重启 GUI"],
+                "outputs": ["Python依赖 PASS"],
+                "insights": "补齐依赖后，表格/图表输出会更完整。",
             },
         ],
     },
