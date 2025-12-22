@@ -25,9 +25,9 @@ from PP import (
     organize_outputs,
     cleanup_minimal,
     OUTPUT_POLICIES,
+    diagnose_env,
 )
 from help_texts import HELP_CONTENT
-
 
 _help_win = None
 APP_NAME = "ProteinPipelineGUI"
@@ -337,11 +337,31 @@ class ScrollableFrame(tk.Frame):
         scrollbar.pack(side="right", fill="y")
 
 
-def open_help_window(root, ctx_getter):
+def _focus_help_item(win, focus_item_id):
+    if not focus_item_id:
+        return
+    tree = getattr(win, "_help_tree", None)
+    on_select = getattr(win, "_help_on_select", None)
+    if tree is None:
+        return
+    try:
+        if not tree.exists(focus_item_id):
+            return
+        tree.selection_set(focus_item_id)
+        tree.focus(focus_item_id)
+        tree.see(focus_item_id)
+        if on_select:
+            on_select()
+    except Exception:
+        return
+
+
+def open_help_window(root, ctx_getter, focus_item_id=None):
     global _help_win
     if _help_win is not None and not _help_win.winfo_exists():
         _help_win = None
     if _help_win is not None and _help_win.winfo_exists():
+        _focus_help_item(_help_win, focus_item_id)
         _help_win.lift()
         return
 
@@ -451,8 +471,104 @@ def open_help_window(root, ctx_getter):
     # ==== 输出速查页 ====
     build_outputs_view(outputs_tab, ctx_getter)
 
+    win._help_tree = tree
+    win._help_on_select = on_select
+    _focus_help_item(win, focus_item_id)
+
     win.bind("<F1>", lambda _e: win.lift())
 
+
+def _build_env_report_text(results):
+    lines = ["环境检测报告", ""]
+    for res in results:
+        component = res.get("component", "")
+        status = res.get("status", "")
+        value = res.get("value", "")
+        fix = res.get("fix", "")
+        lines.append(f"- {component} | {status} | {value} | {fix}")
+    return "\n".join(lines)
+
+
+def open_env_report_window(root, ctx_getter, results):
+    win = tk.Toplevel(root)
+    win.title("环境检测报告")
+    win.geometry("860x480")
+
+    header = tk.Frame(win)
+    header.pack(fill="x", padx=10, pady=(10, 0))
+    tk.Label(header, text="环境检测报告", font=("Arial", 12, "bold")).pack(side="left")
+    tk.Label(
+        header,
+        text="（双击条目可定位到 Help）",
+        fg="#666",
+    ).pack(side="left", padx=8)
+
+    table_frame = tk.Frame(win)
+    table_frame.pack(fill="both", expand=True, padx=10, pady=10)
+
+    cols = ("component", "status", "value", "fix")
+    tree = ttk.Treeview(table_frame, columns=cols, show="headings")
+    tree.heading("component", text="组件")
+    tree.heading("status", text="状态")
+    tree.heading("value", text="检测到的值")
+    tree.heading("fix", text="该怎么修")
+    tree.column("component", width=120, anchor="w")
+    tree.column("status", width=80, anchor="center")
+    tree.column("value", width=260, anchor="w")
+    tree.column("fix", width=320, anchor="w")
+    tree.pack(side="left", fill="both", expand=True)
+
+    v_scroll = ttk.Scrollbar(table_frame, orient="vertical", command=tree.yview)
+    tree.configure(yscrollcommand=v_scroll.set)
+    v_scroll.pack(side="right", fill="y")
+
+    help_lookup = {}
+    for idx, res in enumerate(results):
+        iid = f"env_{idx}"
+        tree.insert(
+            "",
+            "end",
+            iid=iid,
+            values=(
+                res.get("component", ""),
+                res.get("status", ""),
+                res.get("value", ""),
+                res.get("fix", ""),
+            ),
+        )
+        help_lookup[iid] = res.get("help_id")
+
+    def open_help_for_selected():
+        sel = tree.selection()
+        if not sel:
+            messagebox.showinfo("提示", "请先选择一条检测结果。")
+            return
+        help_id = help_lookup.get(sel[0])
+        if help_id:
+            open_help_window(root, ctx_getter, focus_item_id=help_id)
+
+    def on_double_click(_event=None):
+        open_help_for_selected()
+
+    tree.bind("<Double-1>", on_double_click)
+
+    btn_row = tk.Frame(win)
+    btn_row.pack(fill="x", padx=10, pady=(0, 10))
+    tk.Button(btn_row, text="一键打开 Help（定位到对应条目）", command=open_help_for_selected).pack(
+        side="left"
+    )
+
+    def on_copy_report():
+        report = _build_env_report_text(results)
+        win.clipboard_clear()
+        win.clipboard_append(report)
+        messagebox.showinfo("已复制", "环境检测报告已复制到剪贴板。")
+
+    tk.Button(btn_row, text="复制报告", command=on_copy_report).pack(side="left", padx=8)
+
+    win.transient(root)
+    win.grab_set()
+    win.focus_set()
 
 
 def create_gui():
@@ -900,12 +1016,25 @@ def create_gui():
         )
         messagebox.showinfo("MSA 完成", msg)
 
+    def on_env_check(scope="msa"):
+        ctx = ctx_getter()
+        results = diagnose_env(ctx)
+        open_env_report_window(root, ctx_getter, results)
+
+    msa_btn_row = tk.Frame(msa_frame)
+    msa_btn_row.grid(row=1, column=0, columnspan=3, padx=5, pady=(6, 0), sticky="w")
     tk.Button(
-        msa_frame,
+        msa_btn_row,
         text="一键跑 MSA + 自动候选",
         command=on_run_msa,
         width=20,
-    ).grid(row=1, column=0, columnspan=3, padx=5, pady=(6, 0))
+    ).pack(side="left")
+    tk.Button(
+        msa_btn_row,
+        text="环境检测",
+        command=lambda: on_env_check("msa"),
+        width=12,
+    ).pack(side="left", padx=8)
 
     # ===== HOLE 管道配置 =====
     hole_base_dir_var = tk.StringVar(value=r"D:\demo\hole")
@@ -1857,6 +1986,12 @@ def create_gui():
     tk.Button(hole_btn_frame, text="执行 HOLE 管道", command=on_generate, width=18).pack(side="left")
     tk.Button(
         hole_btn_frame,
+        text="环境检测",
+        command=lambda: on_env_check("hole"),
+        width=12,
+    ).pack(side="left", padx=8)
+    tk.Button(
+        hole_btn_frame,
         text="画 HOLE 对比图",
         command=on_plot_hole_metrics,
         width=18,
@@ -1873,11 +2008,13 @@ def create_gui():
             "sites_contacts": bool(sites_contacts_var.get()),
             "sites_coulombic": bool(sites_coulombic_var.get()),
             "chain_id": chain_var.get().strip() or "A",
-            "residue_expr": residue_expr_var.get().strip(),            "roi_expr": roi_expr_var.get().strip(),
+            "residue_expr": residue_expr_var.get().strip(),
+            "roi_expr": roi_expr_var.get().strip(),
             "out_dir": out_dir_var.get().strip(),
             "hole_dir": hole_base_dir_var.get().strip(),
             "hole_models": hole_models_var.get().strip(),
             "cross_contacts_write": bool(cross_write_var.get()),
+            "fasta_path": msa_fasta_var.get().strip(),
         }
 
     refresh_outputs = build_outputs_view(sidebar, ctx_getter)
