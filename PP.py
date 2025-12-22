@@ -78,12 +78,20 @@ def _first_nonempty_line(text: str) -> str:
     return ""
 
 
+def _safe_decode(data: Optional[bytes]) -> str:
+    if not data:
+        return ""
+    if data.startswith((b"\xff\xfe", b"\xfe\xff")) or data.count(b"\x00") > len(data) // 10:
+        return data.decode("utf-16", errors="replace")
+    return data.decode("utf-8", errors="replace")
+
+
 def _run_command(cmd: List[str], timeout: int = 8) -> Dict[str, object]:
     try:
         completed = subprocess.run(
             cmd,
             capture_output=True,
-            text=True,
+            text=False,
             timeout=timeout,
         )
     except FileNotFoundError as exc:
@@ -105,8 +113,8 @@ def _run_command(cmd: List[str], timeout: int = 8) -> Dict[str, object]:
     return {
         "ok": completed.returncode == 0,
         "code": completed.returncode,
-        "stdout": completed.stdout or "",
-        "stderr": completed.stderr or "",
+        "stdout": _safe_decode(completed.stdout),
+        "stderr": _safe_decode(completed.stderr),
         "error": "",
     }
 
