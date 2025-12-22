@@ -2,10 +2,12 @@ import csv
 import json
 import os
 import shutil
+import queue
 from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
+from log_center import LOG_QUEUE, format_record, setup_logger
 from PP import (
     build_axis_cxc,
     build_cxc_script,
@@ -31,6 +33,173 @@ from help_texts import HELP_CONTENT
 
 _help_win = None
 APP_NAME = "ProteinPipelineGUI"
+
+
+class LogConsole:
+    def __init__(self, root: tk.Tk, settings: dict) -> None:
+        self.root = root
+        self.settings = settings
+        self.window: tk.Toplevel | None = None
+        self.text: tk.Text | None = None
+        self.entries: list[tuple[str, str]] = []
+        self._max_entries = 5000
+        self.auto_scroll_var = tk.BooleanVar(master=root, value=True)
+        self.level_vars = {
+            "INFO": tk.BooleanVar(master=root, value=True),
+            "WARNING": tk.BooleanVar(master=root, value=True),
+            "ERROR": tk.BooleanVar(master=root, value=True),
+            "DEBUG": tk.BooleanVar(master=root, value=False),
+        }
+        self.root.after(80, self.pump_logs_to_ui)
+
+    def toggle(self) -> None:
+        if self.window and self.window.winfo_exists():
+            self._close_window()
+            return
+        self.open_window()
+
+    def open_window(self) -> None:
+        if self.window and self.window.winfo_exists():
+            self.window.lift()
+            return
+        self.window = tk.Toplevel(self.root)
+        self.window.title("Logs")
+        self.window.geometry("820x420")
+        self.window.protocol("WM_DELETE_WINDOW", self._close_window)
+
+        toolbar = tk.Frame(self.window)
+        toolbar.pack(side="top", fill="x", padx=6, pady=6)
+
+        tk.Label(toolbar, text="Level:").pack(side="left")
+
+        filters = [
+            ("INFO", "INFO"),
+            ("WARN", "WARNING"),
+            ("ERROR", "ERROR"),
+            ("DEBUG", "DEBUG"),
+        ]
+        for label, level in filters:
+            tk.Checkbutton(
+                toolbar,
+                text=label,
+                variable=self.level_vars[level],
+                command=self._render_entries,
+            ).pack(side="left", padx=(4, 0))
+
+        tk.Checkbutton(
+            toolbar,
+            text="自动滚动到底部",
+            variable=self.auto_scroll_var,
+        ).pack(side="left", padx=(16, 0))
+
+        tk.Button(toolbar, text="复制", command=self._copy_logs).pack(side="right", padx=4)
+        tk.Button(toolbar, text="保存为文件", command=self._save_logs).pack(side="right", padx=4)
+        tk.Button(toolbar, text="清空", command=self._clear_logs).pack(side="right", padx=4)
+
+        text_frame = tk.Frame(self.window)
+        text_frame.pack(fill="both", expand=True, padx=6, pady=(0, 6))
+
+        scrollbar = tk.Scrollbar(text_frame, orient="vertical")
+        self.text = tk.Text(text_frame, wrap="none", yscrollcommand=scrollbar.set)
+        scrollbar.config(command=self.text.yview)
+        scrollbar.pack(side="right", fill="y")
+        self.text.pack(side="left", fill="both", expand=True)
+        self.text.configure(state="disabled")
+
+        self._render_entries()
+        self.settings["show_logs"] = True
+        save_settings(self.settings)
+
+    def _close_window(self) -> None:
+        if self.window and self.window.winfo_exists():
+            self.window.destroy()
+        self.window = None
+        self.text = None
+        self.settings["show_logs"] = False
+        save_settings(self.settings)
+
+    def remember_state(self) -> None:
+        self.settings["show_logs"] = bool(self.window and self.window.winfo_exists())
+        save_settings(self.settings)
+
+    def _clear_logs(self) -> None:
+        self.entries.clear()
+        if self.text:
+            self.text.configure(state="normal")
+            self.text.delete("1.0", "end")
+            self.text.configure(state="disabled")
+
+    def _copy_logs(self) -> None:
+        if not self.text:
+            return
+        content = self.text.get("1.0", "end").strip()
+        if not content:
+            return
+        self.window.clipboard_clear()
+        self.window.clipboard_append(content)
+        messagebox.showinfo("已复制", "日志内容已复制到剪贴板。")
+
+    def _save_logs(self) -> None:
+        if not self.text:
+            return
+        path = filedialog.asksaveasfilename(
+            title="保存日志",
+            defaultextension=".log",
+            filetypes=[("Log files", "*.log"), ("Text files", "*.txt"), ("All files", "*.*")],
+        )
+        if not path:
+            return
+        content = self.text.get("1.0", "end").strip()
+        try:
+            Path(path).write_text(content, encoding="utf-8")
+        except OSError as exc:
+            messagebox.showerror("保存失败", f"无法保存日志：\n{exc}")
+
+    def _level_enabled(self, level: str) -> bool:
+        if level == "WARN":
+            level = "WARNING"
+        var = self.level_vars.get(level)
+        return bool(var.get()) if var else False
+
+    def _append_text(self, message: str) -> None:
+        if not self.text:
+            return
+        self.text.configure(state="normal")
+        self.text.insert("end", message + "\n")
+        if self.auto_scroll_var.get():
+            self.text.see("end")
+        self.text.configure(state="disabled")
+
+    def _render_entries(self) -> None:
+        if not self.text:
+            return
+        self.text.configure(state="normal")
+        self.text.delete("1.0", "end")
+        for level, message in self.entries:
+            if self._level_enabled(level):
+                self.text.insert("end", message + "\n")
+        if self.auto_scroll_var.get():
+            self.text.see("end")
+        self.text.configure(state="disabled")
+
+    def pump_logs_to_ui(self) -> None:
+        updated = False
+        while True:
+            try:
+                record = LOG_QUEUE.get_nowait()
+            except queue.Empty:
+                break
+            message = format_record(record)
+            level = record.levelname
+            self.entries.append((level, message))
+            if len(self.entries) > self._max_entries:
+                self.entries = self.entries[-self._max_entries :]
+            if self.window and self.text and self._level_enabled(level):
+                self._append_text(message)
+                updated = True
+        if updated and self.window and self.text and self.auto_scroll_var.get():
+            self.text.see("end")
+        self.root.after(80, self.pump_logs_to_ui)
 
 
 def _config_path() -> Path:
@@ -578,6 +747,15 @@ def create_gui():
     root.geometry("900x600")
 
     settings = load_settings()
+    setup_logger(APP_NAME)
+    log_console = LogConsole(root, settings)
+
+    menubar = tk.Menu(root)
+    view_menu = tk.Menu(menubar, tearoff=0)
+    view_menu.add_command(label="Logs", command=log_console.toggle)
+    menubar.add_cascade(label="View", menu=view_menu)
+    root.config(menu=menubar)
+
     show_sidebar_var = tk.BooleanVar(
         master=root, value=bool(settings.get("show_outputs_sidebar", False))
     )
@@ -2066,9 +2244,15 @@ def create_gui():
     def on_close():
         settings["show_outputs_sidebar"] = bool(show_sidebar_var.get())
         save_settings(settings)
+        log_console.remember_state()
+        if log_console.window and log_console.window.winfo_exists():
+            log_console.window.destroy()
         root.destroy()
 
     root.protocol("WM_DELETE_WINDOW", on_close)
+
+    if settings.get("show_logs"):
+        log_console.open_window()
     return root
 
 
