@@ -9,8 +9,11 @@ import subprocess
 import math
 import numpy as _np
 import platform
+from log_center import get_logger
 
 OUTPUT_POLICIES = ("Minimal", "Standard", "Full")
+
+_LOGGER = get_logger()
 
 try:
     import pandas as _pd
@@ -87,6 +90,7 @@ def _safe_decode(data: Optional[bytes]) -> str:
 
 
 def _run_command(cmd: List[str], timeout: int = 8) -> Dict[str, object]:
+    _LOGGER.debug("Run command: %s", " ".join(cmd))
     try:
         completed = subprocess.run(
             cmd,
@@ -95,6 +99,7 @@ def _run_command(cmd: List[str], timeout: int = 8) -> Dict[str, object]:
             timeout=timeout,
         )
     except FileNotFoundError as exc:
+        _LOGGER.warning("Command not found: %s", exc)
         return {
             "ok": False,
             "code": None,
@@ -103,6 +108,7 @@ def _run_command(cmd: List[str], timeout: int = 8) -> Dict[str, object]:
             "error": f"找不到命令：{exc}",
         }
     except subprocess.TimeoutExpired:
+        _LOGGER.warning("Command timeout after %ss: %s", timeout, " ".join(cmd))
         return {
             "ok": False,
             "code": None,
@@ -110,6 +116,12 @@ def _run_command(cmd: List[str], timeout: int = 8) -> Dict[str, object]:
             "stderr": "",
             "error": "命令超时",
         }
+    _LOGGER.debug(
+        "Command finished rc=%s stdout=%s stderr=%s",
+        completed.returncode,
+        _first_nonempty_line(_safe_decode(completed.stdout)),
+        _first_nonempty_line(_safe_decode(completed.stderr)),
+    )
     return {
         "ok": completed.returncode == 0,
         "code": completed.returncode,
