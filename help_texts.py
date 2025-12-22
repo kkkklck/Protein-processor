@@ -5,7 +5,7 @@ HELP_CONTENT = [
         "items": [
             {
                 "id": "output_cheatsheet",
-                "title": "输出速查（王牌提示）",
+                "title": "输出速查",
                 "tldr": "不确定会产出啥？去“输出速查（动态）”点刷新，它会按你当前勾选列出证据清单。",
                 "steps": [
                     "打开 Help → 选择“输出速查（动态）”页。",
@@ -316,7 +316,7 @@ HELP_CONTENT = [
                 "use_when": "MSA 模块报找不到 clustalo。",
                 "inputs": ["正确的 clustalo 路径"],
                 "actions": ["更新配置", "重新运行 MSA"],
-                "outputs": ["<stem>_OsAKT2.aln", "alignment_osakt2_view.csv", "candidate_sites_auto_v0.1.csv"],
+                "outputs": ["<stem>_msa.aln", "alignment_view.csv", "candidate_sites_auto_v0.1.csv"],
                 "insights": "路径配好一次即可复用。",
             },
         ],
