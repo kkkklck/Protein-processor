@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import math
 import numpy as _np
+import platform
 
 OUTPUT_POLICIES = ("Minimal", "Standard", "Full")
 
@@ -67,6 +68,289 @@ HOLE_WSL_EXE = "hole"  # env 里 HOLE 的命令名
 # lck这台机子现在的路径是 /usr/bin/clustalo
 # 如果以后换机器，只需要改这里。
 CLUSTALO_WSL_EXE = "/usr/bin/clustalo"
+
+
+def _first_nonempty_line(text: str) -> str:
+    for line in (text or "").splitlines():
+        stripped = line.strip()
+        if stripped:
+            return stripped
+    return ""
+
+
+def _run_command(cmd: List[str], timeout: int = 8) -> Dict[str, object]:
+    try:
+        completed = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except FileNotFoundError as exc:
+        return {
+            "ok": False,
+            "code": None,
+            "stdout": "",
+            "stderr": "",
+            "error": f"找不到命令：{exc}",
+        }
+    except subprocess.TimeoutExpired:
+        return {
+            "ok": False,
+            "code": None,
+            "stdout": "",
+            "stderr": "",
+            "error": "命令超时",
+        }
+    return {
+        "ok": completed.returncode == 0,
+        "code": completed.returncode,
+        "stdout": completed.stdout or "",
+        "stderr": completed.stderr or "",
+        "error": "",
+    }
+
+
+def _summarize_result(result: Dict[str, object]) -> str:
+    if result.get("error"):
+        return str(result["error"])
+    stdout = str(result.get("stdout") or "")
+    stderr = str(result.get("stderr") or "")
+    return _first_nonempty_line(stderr) or _first_nonempty_line(stdout) or "无输出"
+
+
+def _make_result(
+    component: str,
+    status: str,
+    value: str,
+    fix: str,
+    help_id: str,
+) -> Dict[str, str]:
+    return {
+        "component": component,
+        "status": status,
+        "value": value,
+        "fix": fix,
+        "help_id": help_id,
+    }
+
+
+def diagnose_env(ctx: Optional[Dict[str, str]] = None) -> List[Dict[str, str]]:
+    ctx = ctx or {}
+    results: List[Dict[str, str]] = []
+
+    if os.name != "nt":
+        return [
+            _make_result(
+                "WSL",
+                "FAIL",
+                f"当前系统：{platform.system()}（WSL 仅在 Windows 可用）",
+                "请在 Windows + WSL2 环境运行（打开 Help 对应段落）。",
+                "env_wsl_why",
+            )
+        ]
+
+    wsl_list = _run_command(["wsl", "-l", "-v"], timeout=8)
+    if not wsl_list["ok"]:
+        results.append(
+            _make_result(
+                "WSL",
+                "FAIL",
+                _summarize_result(wsl_list),
+                "安装/启用 WSL2 + Ubuntu（打开 Help 对应段落）。",
+                "env_wsl_why",
+            )
+        )
+        return results
+
+    wsl_summary = _first_nonempty_line(str(wsl_list.get("stdout", ""))) or "WSL 可用"
+    results.append(
+        _make_result(
+            "WSL",
+            "PASS",
+            wsl_summary,
+            "已可用（打开 Help 对应段落）。",
+            "env_wsl_why",
+        )
+    )
+
+    wsl_bash = _run_command(["wsl", "bash", "-lc", "echo OK"], timeout=8)
+    if wsl_bash["ok"] and "OK" in str(wsl_bash.get("stdout", "")):
+        results.append(
+            _make_result(
+                "WSL bash",
+                "PASS",
+                "echo OK",
+                "已可用（打开 Help 对应段落）。",
+                "env_wsl_why",
+            )
+        )
+    else:
+        results.append(
+            _make_result(
+                "WSL bash",
+                "FAIL",
+                _summarize_result(wsl_bash),
+                "检查 WSL shell 配置（打开 Help 对应段落）。",
+                "env_wsl_why",
+            )
+        )
+
+    mapping_path = ctx.get("hole_dir") or ctx.get("fasta_path") or ctx.get("fasta_dir")
+    if mapping_path:
+        try:
+            mapping_wsl = hole_win_to_wsl(mapping_path)
+        except Exception as exc:
+            results.append(
+                _make_result(
+                    "盘符映射",
+                    "FAIL",
+                    f"路径转换失败：{exc}",
+                    "使用普通英文路径（打开 Help 对应段落）。",
+                    "env_wsl_why",
+                )
+            )
+        else:
+            mapping_check = _run_command(
+                ["wsl", "bash", "-lc", f'test -d "{mapping_wsl}" && echo OK'],
+                timeout=8,
+            )
+            if mapping_check["ok"] and "OK" in str(mapping_check.get("stdout", "")):
+                results.append(
+                    _make_result(
+                        "盘符映射",
+                        "PASS",
+                        mapping_wsl,
+                        "已可用（打开 Help 对应段落）。",
+                        "env_wsl_why",
+                    )
+                )
+            else:
+                results.append(
+                    _make_result(
+                        "盘符映射",
+                        "FAIL",
+                        _summarize_result(mapping_check) or mapping_wsl,
+                        "确认 /mnt 下能访问 Windows 盘（打开 Help 对应段落）。",
+                        "env_wsl_why",
+                    )
+                )
+    else:
+        results.append(
+            _make_result(
+                "盘符映射",
+                "WARN",
+                "未选择 HOLE 目录或 FASTA，跳过目录检测。",
+                "先选择目录再检测（打开 Help 对应段落）。",
+                "env_wsl_why",
+            )
+        )
+
+    clustalo_cmd = ["wsl", "bash", "-lc", f'"{CLUSTALO_WSL_EXE}" --version']
+    clustalo_res = _run_command(clustalo_cmd, timeout=10)
+    if clustalo_res["ok"]:
+        version = _first_nonempty_line(str(clustalo_res.get("stdout", ""))) or "可执行"
+        results.append(
+            _make_result(
+                "Clustal-Omega",
+                "PASS",
+                version,
+                "已可用（打开 Help 对应段落）。",
+                "env_msa_clustalo",
+            )
+        )
+    else:
+        results.append(
+            _make_result(
+                "Clustal-Omega",
+                "FAIL",
+                _summarize_result(clustalo_res),
+                "WSL 里 apt install clustalo，或改用 EBI 在线版（打开 Help 对应段落）。",
+                "env_msa_clustalo",
+            )
+        )
+
+    conda_init_cmd = ["wsl", "bash", "-lc", f'test -f "{HOLE_WSL_CONDA_INIT}" && echo OK']
+    conda_init_res = _run_command(conda_init_cmd, timeout=8)
+    if conda_init_res["ok"] and "OK" in str(conda_init_res.get("stdout", "")):
+        results.append(
+            _make_result(
+                "conda",
+                "PASS",
+                HOLE_WSL_CONDA_INIT,
+                "已可用（打开 Help 对应段落）。",
+                "env_hole_conda",
+            )
+        )
+    else:
+        results.append(
+            _make_result(
+                "conda",
+                "FAIL",
+                _summarize_result(conda_init_res),
+                "先按文档安装/配置 Miniforge（打开 Help 对应段落）。",
+                "env_hole_conda",
+            )
+        )
+
+    hole_cmd = (
+        f'. {HOLE_WSL_CONDA_INIT} && '
+        f'conda activate {HOLE_WSL_CONDA_ENV} && '
+        f'{HOLE_WSL_EXE} -h | head -n 1'
+    )
+    hole_res = _run_command(["wsl", "bash", "-lc", hole_cmd], timeout=12)
+    if hole_res["ok"]:
+        hole_version = _first_nonempty_line(str(hole_res.get("stdout", ""))) or "可执行"
+        results.append(
+            _make_result(
+                "HOLE",
+                "PASS",
+                hole_version,
+                "已可用（打开 Help 对应段落）。",
+                "env_hole_conda",
+            )
+        )
+    else:
+        results.append(
+            _make_result(
+                "HOLE",
+                "FAIL",
+                _summarize_result(hole_res),
+                "重新创建 hole_env 并安装 hole2（打开 Help 对应段落）。",
+                "env_hole_conda",
+            )
+        )
+
+    missing = []
+    if _PDBParser is None:
+        missing.append("biopython")
+    if _pd is None:
+        missing.append("pandas")
+    if _plt is None:
+        missing.append("matplotlib")
+
+    if missing:
+        results.append(
+            _make_result(
+                "Python依赖",
+                "WARN",
+                "缺少：" + ", ".join(missing),
+                "安装依赖以保证出图/出表完整（打开 Help 对应段落）。",
+                "env_python_deps",
+            )
+        )
+    else:
+        results.append(
+            _make_result(
+                "Python依赖",
+                "PASS",
+                "biopython / pandas / matplotlib",
+                "已可用（打开 Help 对应段落）。",
+                "env_python_deps",
+            )
+        )
+
+    return results
 
 
 def _parse_clustal_alignment(aln_path: Path) -> Tuple[List[str], List[str]]:
