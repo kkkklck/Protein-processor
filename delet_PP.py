@@ -15,8 +15,6 @@ import sys
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog
 
-from Scripts.pywin32_postinstall import root_key_name
-
 
 # --------------------- 数据结构 ---------------------
 
@@ -683,3 +681,4 @@ def _main() -> None:
 
 if __name__ == "__main__":
     _main()
+
