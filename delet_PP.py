@@ -1,13 +1,3 @@
-# -*- coding: utf-8 -*-
-"""
-文件按日期清理（UI版）
-- 选择文件夹后：递归扫描所有子文件夹里的文件（强制递归）
-- 按日期/区间筛选（默认按修改时间 mtime）
-- 先“扫描预览”，再“确认执行”
-- 动作可选：移入 _trash_YYYYMMDD_HHMMSS（可反悔）或永久删除（需二次确认）
-- 执行完不退出，可继续下一轮
-"""
-
 from __future__ import annotations
 
 import fnmatch
@@ -20,9 +10,12 @@ from dataclasses import dataclass
 from datetime import datetime, date, time
 from pathlib import Path
 from typing import List, Optional, Tuple
+import sys
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog
+
+from Scripts.pywin32_postinstall import root_key_name
 
 
 # --------------------- 数据结构 ---------------------
@@ -230,12 +223,15 @@ def worker_execute(
 
 # --------------------- UI 主体 ---------------------
 
-class CleanerApp(tk.Tk):
-    def __init__(self):
-        super().__init__()
-        self.title("🧹 按日期清理文件（递归扫描）")
-        self.geometry("1050x720")
-        self.minsize(950, 650)
+class CleanerApp(ttk.Frame):
+    def __init__(self, master: tk.Misc):
+        super().__init__(master)
+        self._root = master
+        if isinstance(master, (tk.Tk, tk.Toplevel)):
+            master.title("🧹 按日期清理文件（递归扫描）")
+            master.geometry("980x640")
+            master.minsize(900, 600)
+        self.pack(fill="both", expand=True)
 
         # 状态
         self.q: queue.Queue = queue.Queue()
@@ -679,8 +675,11 @@ class CleanerApp(tk.Tk):
             # 未知消息
             pass
 
+def _main() -> None:
+    root = tk.Tk()
+    CleanerApp(root)
+    root.mainloop()
+
 
 if __name__ == "__main__":
-    import sys
-    app = CleanerApp()
-    app.mainloop()
+    _main()
