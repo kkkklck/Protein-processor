@@ -8,6 +8,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 from log_center import LOG_QUEUE, format_record, open_log_dir, setup_logger
+from delet_PP import CleanerApp
 from PP import (
     build_axis_cxc,
     build_cxc_script,
@@ -278,6 +279,31 @@ class LogConsole:
             self.text.see("end")
         self.root.after(80, self.pump_logs_to_ui)
 
+class CleanerConsole:
+    def __init__(self, root: tk.Tk) -> None:
+        self.root = root
+        self.window: tk.Toplevel | None = None
+        self.app: CleanerApp | None = None
+
+    def toggle(self) -> None:
+        if self.window and self.window.winfo_exists():
+            self._close_window()
+            return
+        self.open_window()
+
+    def open_window(self) -> None:
+        if self.window and self.window.winfo_exists():
+            self.window.lift()
+            return
+        self.window = tk.Toplevel(self.root)
+        self.window.protocol("WM_DELETE_WINDOW", self._close_window)
+        self.app = CleanerApp(self.window)
+
+    def _close_window(self) -> None:
+        if self.window and self.window.winfo_exists():
+            self.window.destroy()
+        self.window = None
+        self.app = None
 
 def _config_path() -> Path:
     if os.name == "nt" and os.environ.get("APPDATA"):
@@ -826,10 +852,12 @@ def create_gui():
     settings = load_settings()
     setup_logger(APP_NAME)
     log_console = LogConsole(root, settings)
+    cleaner_console = CleanerConsole(root)
 
     menubar = tk.Menu(root)
     view_menu = tk.Menu(menubar, tearoff=0)
     view_menu.add_command(label="Logs", command=log_console.toggle)
+    view_menu.add_command(label="文件清理", command=cleaner_console.toggle)
     menubar.add_cascade(label="View", menu=view_menu)
     root.config(menu=menubar)
 
