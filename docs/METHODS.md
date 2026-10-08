@@ -1,49 +1,49 @@
-# 方法说明 · Interpreting structural evidence
+# Methods · Interpreting structural evidence
 
-[← 返回项目主页](../README.md)
+[← Back to the project](../README.md)
 
-本页解释结构指标的含义及比较时应保留的参数。分析对象是输入的静态结构模型；这些结果用于提出和排序研究假设。
+This guide explains the structural metrics and the parameters to retain when comparing models. The analyses operate on the input structural models and support the development and prioritization of research hypotheses.
 
-## 跨区域接触
+## Cross-region contacts
 
-给定同一链上的残基集合 A 与 B，程序计算每对残基所含原子之间的最小欧氏距离。原子的选择以 `PP.py` 中 `_get_residue_atom_coords` 的实际实现为准；当前逻辑不应直接描述为“仅重原子距离”。
+For residue sets A and B in the selected chain, the program calculates the minimum Euclidean distance between atoms in each residue pair. Atom selection follows `_get_residue_atom_coords` in `PP.py`; the current implementation should not be described as a heavy-atom-only calculation.
 
-| 指标 | 定义与含义 |
+| Metric | Definition and interpretation |
 | :--- | :--- |
-| `CrossContactPairs` | 最小原子距离不超过所选 cutoff 的残基对数 |
-| `CrossContactDensity` | 接触对数相对理论残基对数 `len(A) × len(B)` 的比例 |
-| `CrossContactMinDist` | 两个集合之间观测到的最小原子距离 |
-| `Pairs@…` | 在不同距离阈值下得到的接触对数 |
-| Top-K 距离 | 最近若干残基对的距离及平均值，用于补充整数计数 |
-| 相对 WT 的漂移 | 同名残基对相对基准模型的距离变化 |
+| `CrossContactPairs` | Number of residue pairs whose minimum atomic distance is within the selected cutoff |
+| `CrossContactDensity` | Contact count divided by the theoretical residue-pair count, `len(A) × len(B)` |
+| `CrossContactMinDist` | Smallest observed atomic distance between the two sets |
+| `Pairs@…` | Contact counts at different distance thresholds |
+| Top-K distances | Distances and averages for the closest residue pairs, complementing integer counts |
+| Differences from WT | Distance changes for matching residue pairs relative to the baseline model |
 
-cutoff、集合大小和输入坐标都会影响结果。小集合的整数计数比较粗糙；过小阈值容易全为 0，过大阈值容易饱和。建议同时记录最小距离、几个预先说明的 cutoff 点与结构图。
+The cutoff, set size, and input coordinates affect the results. Counts are coarse for small sets; strict thresholds can produce all-zero counts, while permissive thresholds can saturate. Report minimum distances, a documented set of cutoffs, and the relevant structural figures together.
 
-程序也支持根据模型间区分度选择 cutoff。此类选择具有探索性质，报告时应说明选择方式，并展示阈值扫描，避免只保留最有利的结果。
+The program can also select a cutoff based on discrimination between models. Treat that choice as exploratory: describe the selection method and show the threshold scan so readers can assess its sensitivity.
 
-如果启用 pLDDT 权重或阈值，程序会读取 PDB B-factor 栏位。仅当输入文件确实将预测置信度存于该栏时，才可按 pLDDT 解读；实验结构的温度因子不等同于 pLDDT。
+When pLDDT weighting or filtering is enabled, the program reads the PDB B-factor field. Interpret that field as pLDDT only when the input file actually stores prediction confidence there. Experimental temperature factors require a different interpretation.
 
-## 孔道几何
+## Pore geometry
 
-HOLE 提供沿孔道轴线的半径轮廓及最小半径，可用于比较狭窄位置。轴线起点、方向、输入结构和参数配置都应在模型间保持可比较。
+HOLE provides radius profiles along a pore axis and the minimum radius, allowing comparison of constrictions. Keep the starting point, direction, structural inputs, and settings comparable across models.
 
-最小半径是几何指标，不能单独换算为电导或离子选择性。比较时应保留实际 HOLE 输入与日志，并对照孔道附近结构。
+Minimum radius is a geometric indicator. Conductance and selectivity require additional evidence. Preserve the actual HOLE inputs and logs and inspect the surrounding structure.
 
-## 表面静电与定性标签
+## Electrostatics and qualitative labels
 
-ChimeraX 脚本用于统一视角、表面与着色配置，便于比较局部静电与接触变化。
+ChimeraX scripts standardize views, surfaces, and coloring to support comparison of local electrostatics and contact changes.
 
-`stage3_table.csv` 中的 `Patch_Electrostatics` 与 `Contacts_Qualitative` 用于汇总局部表面或接触特征；标签的生成和填写规则应对照代码及实际输出核对。“接触减少”“接触断裂”等标签是规则性描述，需回看数量、距离和模型质量。
+`Patch_Electrostatics` and `Contacts_Qualitative` in `stage3_table.csv` summarize local surface or contact features. Check their generation or annotation rules against the code and actual outputs. Rule-based contact descriptions should be interpreted alongside counts, distances, and model quality.
 
-## 为结果保留哪些信息
+## Information to retain
 
-- 本项目版本或 Git 提交号。
-- WT、突变体模型的来源与质量信息。
-- 链 ID、残基编号、两个接触集合和距离阈值。
-- ChimeraX、HOLE、Clustal Omega 的实际版本与所用模块。
-- 生成脚本、日志、原始指标与最终汇总表。
-- 评分规则、阈值选择方式及后续实验验证结果。
+- Project version or Git commit.
+- WT and mutant model provenance and quality information.
+- Chain ID, residue numbering, residue sets, and distance cutoffs.
+- Versions of ChimeraX, HOLE, and Clustal Omega used in the analysis.
+- Generated scripts, logs, original metrics, and final summary tables.
+- Scoring rules, cutoff-selection procedure, and experimental follow-up.
 
-## 引用
+## Citation
 
-请引用实际使用的软件和模型来源：UCSF ChimeraX、HOLE，以及适用的结构预测或序列比对工具。可同时记录本仓库链接与分析所用提交号，以便重复流程。
+Cite the software and model sources actually used: UCSF ChimeraX, HOLE, and the relevant structure-prediction or alignment tools. Include the repository URL and analysis commit to help others reproduce your workflow.
