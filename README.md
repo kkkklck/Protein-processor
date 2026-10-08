@@ -1,274 +1,142 @@
-# Protein Pipeline (PP) — Reproducible Structure-Analysis Workflow for Point Mutants
+<div align="center">
 
-**Protein Pipeline (PP)** is a GUI-driven, reproducible workflow for **batch structural analysis of point mutations**, originally developed for ion channels (e.g., Shaker-type K⁺ channels) but designed to be **protein-agnostic** as long as you provide PDB models with consistent residue numbering.
+<img src="docs/assets/cover.svg" alt="Protein Pipeline — 从蛋白结构，到可比较的研究证据" width="100%">
 
-It helps you go from “WT + mutant structures” → to **standardized figures + quantitative metrics + summary tables**, so downstream wet-lab validation has clear, testable hypotheses.
+# Protein Pipeline · 蛋白结构分析工作台
 
----
+**WT 与突变体对比 · 标准化出图 · 孔径分析 · 定量指标汇总**
 
-## What PP Can Do (Current Capabilities)
+A GUI-driven workflow for reproducible structure analysis of wild-type and mutant proteins.
 
-### 1) Generate standardized UCSF ChimeraX scripts (`.cxc`)
-PP generates ChimeraX command scripts to produce **consistent, comparable outputs** across WT and mutants, such as:
+![Python](https://img.shields.io/badge/Python-3.10%2B-3677a9?style=flat-square&logo=python&logoColor=white) ![Interface](https://img.shields.io/badge/Interface-Tkinter-516b94?style=flat-square) ![ChimeraX](https://img.shields.io/badge/Visualization-ChimeraX-378879?style=flat-square) [![License](https://img.shields.io/badge/License-MIT-378879?style=flat-square)](LICENSE)
 
-- **Local electrostatics around a site/patch** (e.g., P-loop pocket): surface Coulombic coloring and site-focused views
-- **Local contact visualization**: residue sticks + local contact networks around user-defined residues
-- **SASA / H-bond summaries** for defined regions (site-centric or residue-list centric)
-- **Export images** (`sites_coulombic_img`, `sites_contacts_img`, etc.) in a consistent style for reporting
+[功能概览](#功能概览) · [快速开始](#快速开始) · [结果文件](#结果文件) · [方法说明](docs/METHODS.md) · [问题反馈](https://github.com/kkkklck/Protein-processor/issues)
 
-> The goal is not only visualization, but **standardization** (same viewpoint + same settings) so differences are interpretable.
+</div>
 
 ---
 
-### 2) Pore geometry analysis with HOLE (via WSL)
-PP runs **HOLE** in a Windows + WSL setup and summarizes results into:
-- `hole_min_table.csv` (per-model minimum radius, position, etc.)
-- `hole_min_summary.csv` (compact summary for quick comparison)
-- optional plots (hole profile curves, bar charts)
+把 **WT / 突变体 PDB 模型** 转成一套可比较的结构图、接触指标和汇总表，减少重复配置，方便整理候选突变与后续实验假设。项目源于离子通道研究，也可用于链编号与残基编号一致的其他蛋白模型；HOLE 模块主要用于孔道结构。
 
-This provides a **direct geometric proxy** for conductance-relevant constraints (e.g., narrowing near the gate/selectivity region).
+## 功能概览
 
----
+| 模块 | 可以做什么 | 主要产物 |
+| :--- | :--- | :--- |
+| **ChimeraX 出图** | 为 WT 与突变体生成统一配置的静电表面、位点接触、SASA 与氢键分析脚本 | `.cxc` 脚本、结构图、分析日志 |
+| **HOLE 孔径分析** | 通过 WSL 批量计算孔道半径，比较最窄位置与孔径轮廓 | 孔径曲线、最小半径表 |
+| **跨区域接触** | 对两个残基集合计算接触数量、密度、最小距离及 cutoff 扫描 | 接触汇总、距离指标 |
+| **汇总与评分** | 合并结构分析结果，整理候选模型，导出用于比较与报告的表格 | `metrics_all.csv`、`stage3_table.csv` |
+| **突变体构建** | 生成 ChimeraX `swapaa` 点突变脚本 | 突变脚本与执行后的模型 |
+| **MSA 候选位点** | 调用 Clustal Omega，并根据多数派共识整理候选突变 | 对齐视图、候选位点表 |
 
-### 3) “Cross contacts” quantification (P-loop ↔ S6)
-PP includes a contact quantification module intended to replace vague “contacts look dense/loose” language with **numbers**.
+## 工作流程
 
-Typical outputs:
-- `CrossContactPairs`: count of residue pairs across two residue groups passing a distance cutoff
-- `CrossContactDensity`: normalized count (e.g., pairs / theoretical maximum pairs)
-- `CrossContactMinDist`: minimum inter-group distance observed
-- optional cutoff sweep columns: `Pairs@4.0`, `Pairs@5.0`, `Pairs@6.0`, `Pairs@6.5`, `Pairs@7.0`
+```mermaid
+flowchart LR
+    A[WT + 突变体 PDB] --> B[选择链与目标残基]
+    B --> C[ChimeraX 脚本与结构图]
+    B --> D[HOLE 孔径分析]
+    B --> E[跨区域接触指标]
+    C --> F[汇总表与候选比较]
+    D --> F
+    E --> F
+```
 
-Exports:
-- `contacts_cross_summary.csv`
-- optionally merged into `metrics_all.csv` / `stage3_table.csv`
+## 快速开始
 
----
+### 1. 准备环境
 
-### 4) Project-level summary tables (for reporting & scoring)
-PP aggregates outputs into:
-- `metrics_all.csv` (all computed metrics in one place)
-- `metrics_scored.csv` (metrics mapped into a scoring system if enabled)
-- `stage3_table.csv` (human-readable reporting table, including qualitative tags)
+使用 **Python 3.10+**，推荐 Windows 环境。当前源码使用 `str | None` 等类型注解，因此旧版 README 中的 Python 3.9 要求已调整。
 
----
+```bash
+git clone https://github.com/kkkklck/Protein-processor.git
+cd Protein-processor
+python -m pip install numpy pandas matplotlib biopython
+```
 
-## What Those “Stage 3” Qualitative Columns Mean (No Code Needed)
+Tkinter 通常随 Windows Python 安装提供。按需要配置以下外部工具：
 
-In `stage3_table.csv`, two columns translate raw structural outputs into plain-language evidence.
+| 工具 | 用途 | 什么时候需要 |
+| :--- | :--- | :--- |
+| UCSF ChimeraX | 执行 `.cxc`、生成结构图、执行 `swapaa` | 出图与突变体构建 |
+| WSL + HOLE | 孔径计算 | 使用 HOLE 模块时 |
+| WSL + Clustal Omega | 多序列比对 | 使用 MSA 模块时 |
 
-### `Patch_Electrostatics`
-A qualitative description of the **electrostatic patch** around a defined pocket/region (e.g., P-loop neighborhood), typically read from the **Coulombic surface images**.
+HOLE 与 Clustal Omega 的 WSL 路径配置位于 [PP.py](PP.py) 开头；请按本机环境调整。可在 GUI 内使用环境检测入口检查配置。
 
-Example tags:
-- “moderately negative + half-open”
-- “strongly negative + concave/half-open”
+### 2. 打开工作台
 
-Interpretation:
-> Indicates whether the pocket tends to attract/repel charged species and whether its shape appears open/occluded.
-
----
-
-### `Contacts_Qualitative`
-A qualitative description of whether the **coupling contact network** between two functional regions is intact, guided by contact images and supported by cross-contact metrics.
-
-Example tags:
-- “contacts weakened”
-- “contacts broken”
-- “contacts compact/intact”
-
-Interpretation:
-> Summarizes whether the P-loop ↔ S6 coupling appears mechanically connected or decoupled.
-
----
-
-## Methods-Style Note: Cross Contacts Metrics and Cutoff Sweep (How to Interpret Results)
-
-### Definitions
-Given two residue sets **A** (e.g., P-loop residues) and **B** (e.g., S6 residues), PP computes inter-residue proximity using atomic coordinates from PDB models.
-
-- For each residue pair *(i ∈ A, j ∈ B)*, PP computes a distance metric (commonly the **minimum heavy-atom distance** between the two residues, or a chosen representative atom distance depending on the implementation).
-- A residue pair is counted as a “cross contact” if its distance is ≤ **cutoff** (Å).
-
-From these pairwise checks, PP reports:
-- **CrossContactPairs**: number of contacting residue pairs across the two sets
-- **CrossContactDensity**: `CrossContactPairs / (|A| × |B|)` (normalization to allow comparison across different residue-set sizes)
-- **CrossContactMinDist**: the minimum distance observed across all cross-set pairs (useful as a “closest approach” indicator)
-
-### Why values may look identical across models
-Cross contacts can appear identical for multiple models for practical reasons:
-1. **Residue sets are small**: if |A| and |B| are small, `|A|×|B|` is small and **counts become coarse** (e.g., 0/1/2…), limiting resolution.
-2. **Cutoff is not discriminative**:  
-   - Too strict → most models report 0 pairs  
-   - Too loose → most models report the same saturated pair count  
-3. **Distance metric choice**: using Cα–Cα distances can miss side-chain-specific differences; heavy-atom or side-chain distances are usually more sensitive.
-
-### Cutoff sweep as a robustness check (recommended)
-To avoid overfitting a single cutoff, PP can compute a **cutoff sweep**:
-- `Pairs@4.0`, `Pairs@5.0`, `Pairs@6.0`, `Pairs@6.5`, `Pairs@7.0`, …
-
-Interpretation:
-- If models diverge only at larger cutoffs (e.g., ≥6.5 Å), that suggests **weak/long-range proximity** rather than tight packing.
-- If divergence exists at smaller cutoffs (e.g., 4–5 Å), that suggests **strong, physically tight coupling**.
-
-Recommended reporting practice:
-- Use `CrossContactMinDist` + a **small set of cutoff points** (e.g., 5.0, 6.5, 7.0 Å) to show where separation emerges.
-- Treat cross-contact metrics as **supporting evidence** that complements gate geometry (HOLE) and electrostatics, rather than as a standalone “proof”.
-
----
-
-## Repository Structure (Typical)
-
-- `graphic（PP）.py`  
-  Main GUI entry point (Tkinter). Launch this for daily use.
-
-- `PP.py`  
-  Core backend: generating ChimeraX scripts, running HOLE via WSL, extracting/summarizing metrics, table export.
-
-- `help_texts.py`  
-  In-app help/manual text.
-
-- `msa_consensus_tool.py`  
-  Utility for MSA consensus / mutation suggestion support (optional).
-
----
-
-## Requirements
-
-### Mandatory
-- **Python 3.9+** (Windows recommended)
-- Typical Python packages:
-  - `pandas`, `numpy`
-  - `matplotlib` (if plotting is enabled)
-  - Tkinter (usually bundled with standard Python on Windows)
-
-### External tools (module-dependent)
-- **UCSF ChimeraX** (required for `.cxc` execution and figure generation)
-- **WSL2** (Windows Subsystem for Linux)
-- **HOLE** installed inside WSL (required for pore analysis)
-- Optional: **Clustal Omega** (for MSA utilities)
-
----
-
-## Installation (Typical)
-
-1. Create a Python environment (conda or venv).
-2. Install dependencies:
-   ```bash
-   pip install pandas numpy matplotlib
-Install and verify UCSF ChimeraX.
-
-If you need HOLE:
-
-enable WSL2
-
-install HOLE in WSL
-
-ensure PP’s WSL paths/env activation match your setup
-
-Quick Start (Recommended Workflow)
-Step 1 — Prepare input models
-Put WT + mutants in one folder, with:
-
-consistent residue numbering
-
-consistent chain IDs (or known chain ID to use)
-
-Step 2 — Launch PP GUI
-bash
-复制代码
+```bash
 python "graphic（PP）.py"
-Step 3 — Generate ChimeraX scripts and images
-Configure in GUI:
+```
 
-PDB folder
+1. 选择 **WT PDB**，按需添加突变体模型。
+2. 进入“研究”模式，设置链 ID、目标残基与输出目录。
+3. 选择所需分析项，生成 `.cxc`，再在 ChimeraX 中执行。
+4. 按需使用 **HOLE** 或跨区域接触分析补充指标。
+5. 在“汇总 & 评分”页整理输出，导出比较表。
 
-chain ID
+**输入准备：**各模型应使用一致的残基编号和链标识。序列比对中的位点与 PDB 编号也需要核对，避免把编号差异当成结构差异。
 
-site residues (e.g., P-loop residues)
+## 结果文件
 
-optional paired region residues (e.g., P-loop group vs S6 group)
-Generate .cxc scripts and run them in ChimeraX to produce:
+以下文件由对应模块生成，具体内容取决于选项和执行结果。
 
-sites_coulombic_img
+| 文件 | 内容 |
+| :--- | :--- |
+| `hole_min_table.csv` | 各模型的最小孔径及相关位置 |
+| `hole_min_summary.csv` | 孔径分析简表 |
+| `contacts_cross_summary.csv` | 两个残基集合的接触统计 |
+| `metrics_all.csv` | 合并后的定量指标 |
+| `metrics_scored.csv` | 按配置规则计算的评分 |
+| `stage3_table.csv` | 用于比较与报告的汇总表 |
 
-sites_contacts_img
+<details>
+<summary><strong>接触数量相同时，怎么继续比较？</strong></summary>
 
-SASA/H-bond outputs (if enabled)
+残基集合很小、cutoff 过严或过宽，都可能让接触数量失去区分度。结合 `CrossContactMinDist`、`Pairs@…` cutoff 扫描和 Top-K 距离指标查看差异，并对照结构图。完整定义见 [方法说明](docs/METHODS.md)。
 
-Step 4 — Run HOLE (optional)
-Batch-run pore analysis and export:
+</details>
 
-hole_min_table.csv
+<details>
+<summary><strong>常见问题与排查入口</strong></summary>
 
-hole_min_summary.csv
+| 现象 | 优先检查 |
+| :--- | :--- |
+| 残基找不到 | PDB 编号、链 ID、残基表达式 |
+| HOLE / WSL 执行失败 | WSL 是否可用、Conda 初始化路径、环境名与 HOLE 命令 |
+| MSA 无法运行 | WSL 中 `clustalo` 路径、FASTA 文件、参考序列名称 |
+| 汇总缺少部分列 | 对应分析模块是否实际执行、日志与输出目录是否完整 |
 
-plots (if enabled)
+GUI 内可通过使用手册、日志窗口和输出预览进一步定位问题。
 
-Step 5 — Export metrics tables
-Export/merge:
+</details>
 
-metrics_all.csv
+## 项目结构
 
-metrics_scored.csv (if enabled)
+```text
+Protein-processor/
+├── graphic（PP）.py        # Tkinter GUI 入口
+├── PP.py                  # 脚本生成、孔径分析、指标与汇总
+├── msa_consensus_tool.py   # 共识分析与候选位点
+├── help_texts.py           # 内置使用手册
+├── log_center.py           # 日志管理
+├── delet_PP.py             # 文件清理工具
+└── docs/                  # 主页素材与方法说明
+```
 
-stage3_table.csv
+## 方法与引用
 
-Reproducibility & Batch Scaling
-PP is designed so a structural workflow can be replayed and scaled:
+结构指标用于支持候选比较与机制假设，功能变化仍需相应实验验证。孔径、静电表面与接触指标应结合输入模型质量一起解读；评分本身并不等同于实验效应大小。
 
-standardized .cxc scripts instead of manual clicking
+用于论文时，请记录本项目版本、输入模型来源、残基集合与分析参数，并引用实际使用的 ChimeraX、HOLE 和结构预测工具。详细解释见 [方法说明](docs/METHODS.md)。
 
-batch outputs per model
+## 许可与交流
 
-merged CSV summaries for ranking and reporting
+本项目采用 [MIT License](LICENSE)。欢迎通过 [Issues](https://github.com/kkkklck/Protein-processor/issues) 反馈使用问题或提交改进建议。
 
-persistent UI state (e.g., settings.json) to avoid reconfiguring each session
+<div align="center">
 
-This makes it feasible to go from “6 mutants” → “60 mutants” without turning the project into chaos.
+<sub>Built by LCK · From structures to testable hypotheses.</sub>
 
-Troubleshooting (Common Failure Modes)
-Residue not found / numbering mismatch:
-Most issues come from inconsistent residue numbering across models.
-
-Chain mismatch:
-Different chain IDs across models can break site extraction and contact analysis.
-
-HOLE/WSL failures:
-Usually path/env activation issues inside WSL.
-
-Cross-contact metrics all identical:
-Indicates a non-discriminative cutoff, a too-small residue set, or an insensitive distance metric.
-Use cutoff sweep columns and report CrossContactMinDist to show where separation emerges.
-
-Scientific Note (How to Use Outputs Responsibly)
-PP does not “prove” functional change alone. It provides:
-
-standardized structural evidence,
-
-quantitative ranking signals,
-
-mechanistic narratives (electrostatics + geometry + coupling contacts),
-
-so wet-lab assays can validate the most plausible candidates first.
-
-How to Cite (Guideline)
-If you use PP in academic work, cite the underlying tools:
-
-UCSF ChimeraX (structure visualization/analysis)
-
-HOLE (pore radius profiling)
-
-your structure predictor used for input models (e.g., AlphaFold / ColabFold)
-
-License
-This project is released under the MIT License.
-
-Contact / Contribution
-The pipeline evolves alongside real research workflows. Issues and PRs are welcome, especially for:
-
-more robust residue mapping across models
-
-improved contact metrics (heavy-atom-only, sidechain-only, per-residue min-dist, etc.)
-
-data-driven cutoff selection and better sensitivity analysis
+</div>
